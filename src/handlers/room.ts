@@ -140,7 +140,7 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
       return;
     }
 
-    await setRoomStatus(roomId, "playing");
+    await setRoomStatus(roomId, "collecting_codes");
 
     // Remove the Start Game button from the original message
     try {
@@ -151,9 +151,9 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
 
     await ctx.answerCallbackQuery();
 
-    // Broadcast game-started to every player in their own locale
+    // Tell every player to send their secret code — each in their own locale
     for (const player of room.players) {
-      const msg = tFor(player, "game-started", {
+      const msg = tFor(player, "game-collecting-codes", {
         roomId,
         count: String(room.players.length),
       });

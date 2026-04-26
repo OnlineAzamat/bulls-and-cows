@@ -1,4 +1,4 @@
-# --- Onboarding ---
+# ── Onboarding ───────────────────────────────────────────────────────────────
 choose-language = Tilni tanlang / Выберите язык:
 
 welcome =
@@ -7,9 +7,9 @@ welcome =
     Bu blef mexanizmiga ega ko'p o'yinchilik mantiqiy o'yin.
     Raqiblaringizning yashirin kodlarini toping va o'zingiznikini yashiring!
 
-    Boshlash uchun quyidagi menyudan foydalaning.
+    Xona yaratish uchun /createroom yuboring.
 
-# --- Profile ---
+# ── Profile ───────────────────────────────────────────────────────────────────
 profile =
     👤 <b>Profil</b>
 
@@ -19,7 +19,7 @@ profile =
 
 profile-not-found = Profil topilmadi. Ro'yxatdan o'tish uchun /start yuboring.
 
-# --- Room ---
+# ── Room lobby ────────────────────────────────────────────────────────────────
 room-created =
     🎮 <b>Xona yaratildi!</b>
 
@@ -43,21 +43,42 @@ room-joined =
 
 player-joined = 👋 <b>{ $name }</b> xonaga qo'shildi. O'yinchilar: { $count }
 
-game-started =
-    🚀 <b>O'yin boshlandi!</b>
-
-    Xona: <code>{ $roomId }</code>
-    Ishtirokchilar: { $count }
-
-    ⏳ Keyingi qadam tez orada e'lon qilinadi...
-
 not-enough-players = ❌ O'yinchilar yetarli emas. Boshlash uchun kamida 2 o'yinchi kerak.
 
 not-host = ❌ Faqat xona yaratuvchisi o'yinni boshlashi mumkin.
 
 room-status-playing = ℹ️ O'yin allaqachon davom etmoqda.
 
-# --- Buttons ---
+# ── Code collection phase ─────────────────────────────────────────────────────
+game-collecting-codes =
+    🔐 <b>O'yin boshlanmoqda!</b>
+
+    Xona: <code>{ $roomId }</code> · Ishtirokchilar: { $count }
+
+    Botga hozir o'zingizning yashirin <b>4 raqamli kodingizni</b> yuboring.
+    Masalan: <code>4271</code>
+
+    ⚠️ Sizning kodingiz boshqa o'yinchilardan yashirin bo'ladi.
+
+code-accepted = ✅ Sizning kodingiz qabul qilindi. Boshqa o'yinchilarni kutmoqdamiz...
+
+code-already-set = ℹ️ Siz allaqachon yashirin kodingizni yuborgansiz.
+
+# ── Game starts ───────────────────────────────────────────────────────────────
+all-codes-collected =
+    🎯 <b>Barcha kodlar qabul qilindi!</b>
+
+    O'yin boshlandi! Omad, <code>{ $roomId }</code>! 🚀
+
+your-turn =
+    🎯 <b>Sizning navbatingiz!</b>
+
+    <b>{ $targetName }</b> ning yashirin 4 raqamli kodini toping.
+    4 raqamli sonni yuboring.
+
+wait-your-turn = ⏳ Hozir sizning navbatingiz emas. O'z navbatingizni kuting.
+
+# ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek
 btn-start-game = 🚀 O'yinni boshlash
