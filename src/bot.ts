@@ -4,6 +4,7 @@ import { MyContext, SessionData } from "./types";
 import { i18n } from "./utils/i18n";
 import { registerStartHandler } from "./handlers/start";
 import { registerProfileHandler } from "./handlers/profile";
+import { registerRoomHandlers } from "./handlers/room";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set in .env");
@@ -20,6 +21,7 @@ bot.use(i18n);
 
 registerStartHandler(bot);
 registerProfileHandler(bot);
+registerRoomHandlers(bot);
 
 bot.catch((err) => {
   const ctx = err.ctx;
