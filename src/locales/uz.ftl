@@ -9,6 +9,16 @@ welcome =
 
     Boshlash uchun quyidagi menyudan foydalaning.
 
+# --- Profile ---
+profile =
+    👤 <b>Profil</b>
+
+    Ism: { $name }
+    O'yinlar: { $games }
+    G'alabalar: { $wins }
+
+profile-not-found = Profil topilmadi. Ro'yxatdan o'tish uchun /start yuboring.
+
 # --- Buttons ---
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek

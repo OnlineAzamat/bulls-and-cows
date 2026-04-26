@@ -1,5 +1,6 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { MyContext } from "../types";
+import { upsertUser } from "../services/userService";
 
 export function registerStartHandler(bot: Bot<MyContext>): void {
   bot.command("start", async (ctx) => {
@@ -12,6 +13,15 @@ export function registerStartHandler(bot: Bot<MyContext>): void {
 
   bot.callbackQuery(/^set_lang:(.+)$/, async (ctx) => {
     const locale = ctx.match[1];
+    const from = ctx.from;
+
+    await upsertUser({
+      telegramId: BigInt(from.id),
+      username: from.username,
+      firstName: from.first_name,
+      languageCode: locale,
+    });
+
     await ctx.i18n.setLocale(locale);
 
     await ctx.editMessageText(ctx.t("welcome"), { parse_mode: "HTML" });

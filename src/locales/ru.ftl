@@ -9,6 +9,16 @@ welcome =
 
     Используйте меню ниже, чтобы начать.
 
+# --- Profile ---
+profile =
+    👤 <b>Профиль</b>
+
+    Имя: { $name }
+    Игр сыграно: { $games }
+    Побед: { $wins }
+
+profile-not-found = Профиль не найден. Отправьте /start чтобы зарегистрироваться.
+
 # --- Buttons ---
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek
