@@ -20,6 +20,17 @@ profile =
 profile-not-found = Профиль не найден. Отправьте /start чтобы зарегистрироваться.
 
 # ── Room lobby ────────────────────────────────────────────────────────────────
+room-lobby =
+    🎮 <b>Комната: <code>{ $roomId }</code></b>
+
+    Игроки ({ $count }):
+    { $playerList }
+
+    Поделитесь кодом с друзьями:
+    <code>/joinroom { $roomId }</code>
+
+label-host = (хост)
+
 room-created =
     🎮 <b>Комната создана!</b>
 
@@ -121,9 +132,48 @@ bluff-registered =
 
 session-expired = ⏱ Время вышло. Сессия устарела, попробуйте снова.
 
+# ── Bluff penalty ─────────────────────────────────────────────────────────────
+bluff-penalty =
+    🚨 <b>Блеф раскрыт!</b>
+
+    <b>{ $blufferName }</b> солгал <b>{ $attackerName }</b> на попытку <code>{ $guess }</code>.
+    Реальный результат: 🐂 <b>{ $realBulls }</b> Быков, 🐄 <b>{ $realCows }</b> Коров
+    Ложный результат:   🐂 <b>{ $fakeBulls }</b> Быков, 🐄 <b>{ $fakeCows }</b> Коров
+
+    🔍 Подсказка: цифра на позиции { $position } в коде { $blufferName } — <b>{ $digit }</b>.
+
+# ── Elimination ───────────────────────────────────────────────────────────────
+player-eliminated =
+    💀 <b>{ $targetName } выбыл!</b>
+
+    <b>{ $attackerName }</b> угадал код <b>{ $targetName }</b>: <code>{ $guess }</code>
+    { $attackerName } теперь атакует следующего игрока.
+
+you-cracked-code =
+    🎉 <b>Вы разгадали код { $targetName }!</b>
+
+    Их секрет был: <code>{ $code }</code>
+    Ваша цель обновлена — продолжайте!
+
+# ── Endgame ───────────────────────────────────────────────────────────────────
+game-winner =
+    🏆 <b>Игра завершена!</b>
+
+    Победитель: <b>{ $winnerName }</b> 🎊
+
+    Комната <code>{ $roomId }</code> закрыта. Спасибо за игру!
+
+# ── Buttons ───────────────────────────────────────────────────────────────────
+leaveroom-not-in-room = ℹ️ Вы не находитесь ни в одной комнате.
+leaveroom-game-active = ❌ Нельзя покинуть комнату во время активной игры.
+room-dissolved = 🚫 Хост покинул комнату <code>{ $roomId }</code>. Комната закрыта.
+you-left-room = 👋 Вы покинули комнату <code>{ $roomId }</code>.
+you-were-kicked = ❌ Вас исключили из комнаты <code>{ $roomId }</code>.
+
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek
 btn-start-game = 🚀 Начать игру
 btn-tell-truth = ✅ Сказать правду
 btn-bluff = 🎭 Блефовать
+btn-leave-room = 🚪 Покинуть комнату

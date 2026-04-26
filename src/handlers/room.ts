@@ -6,22 +6,180 @@ import {
   createRoom,
   joinRoom,
   getRoom,
+  getPlayerRoom,
+  clearPlayerRoom,
   setRoomStatus,
+  setLobbyMessage,
+  getPlayerLobbyMessages,
+  deleteLobbyMessage,
+  removePlayer,
   RoomPlayer,
+  RoomData,
 } from "../services/roomService";
 
-// Reads the user's locale from Redis cache (set during language selection).
-// Falls back to ctx.i18n.getLocale() only if the cache is cold (e.g. new user
-// who hasn't chosen a language yet).
 async function resolveLocale(ctx: MyContext): Promise<string> {
   const telegramId = String(ctx.from!.id);
   return (await getCachedLocale(telegramId)) ?? (await ctx.i18n.getLocale());
 }
 
-// Translate a message for a specific player using their stored languageCode.
-// Used when sending outbound messages to users other than the current ctx.from.
 function tFor(player: RoomPlayer, key: string, vars?: Record<string, string>): string {
   return i18n.t(player.languageCode, key, vars);
+}
+
+function buildPlayerList(
+  players: RoomPlayer[],
+  hostId: string,
+  locale: string
+): string {
+  return players
+    .map((p) => {
+      const name = p.username ? `@${p.username}` : p.firstName;
+      const label = p.telegramId === hostId ? ` ${i18n.t(locale, "label-host")}` : "";
+      return `• ${name}${label}`;
+    })
+    .join("\n");
+}
+
+// Host gets kick buttons + start game; others get a leave button.
+function buildLobbyKeyboard(
+  room: RoomData,
+  viewerTelegramId: string,
+  locale: string
+): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  if (viewerTelegramId === room.hostId) {
+    for (const p of room.players) {
+      if (p.telegramId === room.hostId) continue;
+      const name = p.username ? `@${p.username}` : p.firstName;
+      kb.text(`✖ ${name}`, `kick:${room.roomId}:${p.telegramId}`).row();
+    }
+    kb.text(i18n.t(locale, "btn-start-game"), `start_game:${room.roomId}`);
+  } else {
+    kb.text(i18n.t(locale, "btn-leave-room"), `leave:${room.roomId}`);
+  }
+  return kb;
+}
+
+// Edit every player's stored lobby message with the current player list.
+async function updateAllLobbyMessages(
+  ctx: MyContext,
+  room: RoomData,
+  skipTelegramId?: string
+): Promise<void> {
+  const msgMap = await getPlayerLobbyMessages(room.roomId, room.players);
+
+  for (const player of room.players) {
+    if (player.telegramId === skipTelegramId) continue;
+    const msgId = msgMap[player.telegramId];
+    if (!msgId) continue;
+
+    const playerList = buildPlayerList(room.players, room.hostId, player.languageCode);
+    const keyboard = buildLobbyKeyboard(room, player.telegramId, player.languageCode);
+
+    try {
+      await ctx.api.editMessageText(
+        Number(player.telegramId),
+        msgId,
+        tFor(player, "room-lobby", {
+          roomId: room.roomId,
+          count: String(room.players.length),
+          playerList,
+        }),
+        { parse_mode: "HTML", reply_markup: keyboard }
+      );
+    } catch { /* message gone or content unchanged */ }
+  }
+}
+
+// Shared leave/kick logic split into its own helper so both the command
+// and the inline button share the same flow.
+async function doLeaveOrKick(
+  ctx: MyContext,
+  leaverId: string,
+  roomId: string,
+  isCallback: boolean
+): Promise<void> {
+  const room = await getRoom(roomId);
+
+  if (!room) {
+    const reply = ctx.t("leaveroom-not-in-room");
+    if (isCallback) {
+      await ctx.answerCallbackQuery({ text: reply, show_alert: true });
+    } else {
+      await ctx.reply(reply);
+    }
+    return;
+  }
+
+  if (room.status !== "waiting") {
+    const reply = ctx.t("leaveroom-game-active");
+    if (isCallback) {
+      await ctx.answerCallbackQuery({ text: reply, show_alert: true });
+    } else {
+      await ctx.reply(reply);
+    }
+    return;
+  }
+
+  if (isCallback) await ctx.answerCallbackQuery();
+
+  const result = await removePlayer(roomId, leaverId);
+
+  if (result.type === "error") return;
+
+  if (result.type === "dissolved") {
+    // Host left — notify everyone and clean up side-keys
+    await clearPlayerRoom(leaverId);
+    for (const p of result.players) {
+      await clearPlayerRoom(p.telegramId);
+      const msgMap = await getPlayerLobbyMessages(roomId, result.players);
+      const msgId = msgMap[p.telegramId];
+      const text = tFor(p, "room-dissolved", { roomId });
+      if (msgId) {
+        try {
+          await ctx.api.editMessageText(Number(p.telegramId), msgId, text, {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard(),
+          });
+          await deleteLobbyMessage(roomId, p.telegramId);
+          continue;
+        } catch { /* fall through to sendMessage */ }
+      }
+      try {
+        await ctx.api.sendMessage(Number(p.telegramId), text, { parse_mode: "HTML" });
+      } catch { /* blocked */ }
+      await deleteLobbyMessage(roomId, p.telegramId);
+    }
+    return;
+  }
+
+  // Non-host left — update their message, clear their keys, refresh others
+  const { room: updatedRoom } = result;
+  await clearPlayerRoom(leaverId);
+
+  const leaver = room.players.find((p) => p.telegramId === leaverId);
+  if (leaver) {
+    const msgMap = await getPlayerLobbyMessages(roomId, room.players);
+    const leaverMsgId = msgMap[leaverId];
+    const leftText = tFor(leaver, "you-left-room", { roomId });
+    if (leaverMsgId) {
+      try {
+        await ctx.api.editMessageText(Number(leaverId), leaverMsgId, leftText, {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard(),
+        });
+      } catch {
+        try {
+          await ctx.api.sendMessage(Number(leaverId), leftText, { parse_mode: "HTML" });
+        } catch { /* blocked */ }
+      }
+      await deleteLobbyMessage(roomId, leaverId);
+    } else {
+      await ctx.reply(leftText, { parse_mode: "HTML" });
+    }
+  }
+
+  await updateAllLobbyMessages(ctx, updatedRoom, leaverId);
 }
 
 export function registerRoomHandlers(bot: Bot<MyContext>): void {
@@ -39,15 +197,23 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
 
     const roomId = await createRoom(host);
 
-    const keyboard = new InlineKeyboard().text(
-      ctx.t("btn-start-game"),
-      `start_game:${roomId}`
+    const fakeRoom: RoomData = {
+      roomId,
+      hostId: host.telegramId,
+      status: "waiting",
+      players: [host],
+      createdAt: Date.now(),
+    };
+
+    const playerList = buildPlayerList([host], host.telegramId, locale);
+    const keyboard = buildLobbyKeyboard(fakeRoom, host.telegramId, locale);
+
+    const sentMsg = await ctx.reply(
+      ctx.t("room-lobby", { roomId, count: "1", playerList }),
+      { parse_mode: "HTML", reply_markup: keyboard }
     );
 
-    await ctx.reply(ctx.t("room-created", { roomId }), {
-      parse_mode: "HTML",
-      reply_markup: keyboard,
-    });
+    await setLobbyMessage(roomId, host.telegramId, sentMsg.message_id);
   });
 
   // ── /joinroom <ROOMID> ────────────────────────────────────────────────────
@@ -77,36 +243,112 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
         ROOM_NOT_WAITING: "room-not-waiting",
         ALREADY_IN_ROOM: "already-in-room",
       };
-      await ctx.reply(ctx.t(keyMap[result.reason], { roomId }), {
-        parse_mode: "HTML",
-      });
+      await ctx.reply(ctx.t(keyMap[result.reason], { roomId }), { parse_mode: "HTML" });
       return;
     }
 
     const { room } = result;
-    await ctx.reply(ctx.t("room-joined", { roomId }), { parse_mode: "HTML" });
 
-    // Notify host (if they're a different person) using the host's own locale
-    if (room.hostId !== String(from.id)) {
-      const hostPlayer = room.players.find((p) => p.telegramId === room.hostId);
-      const displayName = from.username ? `@${from.username}` : from.first_name;
-      const hostMsg = hostPlayer
-        ? tFor(hostPlayer, "player-joined", {
-            name: displayName,
-            count: String(room.players.length),
-            roomId,
-          })
-        : "";
+    // Send the joining player their own lobby message (with leave button)
+    const playerList = buildPlayerList(room.players, room.hostId, locale);
+    const keyboard = buildLobbyKeyboard(room, player.telegramId, locale);
+    const sentMsg = await ctx.reply(
+      ctx.t("room-lobby", {
+        roomId,
+        count: String(room.players.length),
+        playerList,
+      }),
+      { parse_mode: "HTML", reply_markup: keyboard }
+    );
+    await setLobbyMessage(roomId, player.telegramId, sentMsg.message_id);
 
-      if (hostMsg) {
+    // Edit all existing players' lobby messages to reflect the new arrival
+    await updateAllLobbyMessages(ctx, room, player.telegramId);
+  });
+
+  // ── /leaveroom ────────────────────────────────────────────────────────────
+  bot.command("leaveroom", async (ctx) => {
+    const from = ctx.from!;
+    const telegramId = String(from.id);
+
+    const roomId = await getPlayerRoom(telegramId);
+
+    if (!roomId) {
+      await ctx.reply(ctx.t("leaveroom-not-in-room"));
+      return;
+    }
+
+    await doLeaveOrKick(ctx, telegramId, roomId, false);
+  });
+
+  // ── leave:{roomId} callback (Leave Room button for non-host players) ──────
+  bot.callbackQuery(/^leave:(.+)$/, async (ctx) => {
+    const roomId = ctx.match[1];
+    const telegramId = String(ctx.from.id);
+    await doLeaveOrKick(ctx, telegramId, roomId, true);
+  });
+
+  // ── kick:{roomId}:{telegramId} callback ───────────────────────────────────
+  bot.callbackQuery(/^kick:([^:]+):(.+)$/, async (ctx) => {
+    const roomId = ctx.match[1];
+    const targetId = ctx.match[2];
+    const requesterId = String(ctx.from.id);
+
+    const room = await getRoom(roomId);
+
+    if (!room) {
+      await ctx.answerCallbackQuery({ text: ctx.t("room-not-found", { roomId }), show_alert: true });
+      return;
+    }
+    if (room.hostId !== requesterId) {
+      await ctx.answerCallbackQuery({ text: ctx.t("not-host"), show_alert: true });
+      return;
+    }
+    if (room.status !== "waiting") {
+      await ctx.answerCallbackQuery({ text: ctx.t("room-status-playing"), show_alert: true });
+      return;
+    }
+
+    const kickedPlayer = room.players.find((p) => p.telegramId === targetId);
+    if (!kickedPlayer) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    const result = await removePlayer(roomId, targetId);
+    await ctx.answerCallbackQuery();
+
+    if (result.type === "error") return;
+
+    // Notify the kicked player
+    const msgMap = await getPlayerLobbyMessages(roomId, room.players);
+    const kickedMsgId = msgMap[targetId];
+    const kickedText = tFor(kickedPlayer, "you-were-kicked", { roomId });
+
+    if (kickedMsgId) {
+      try {
+        await ctx.api.editMessageText(
+          Number(targetId),
+          kickedMsgId,
+          kickedText,
+          { parse_mode: "HTML", reply_markup: new InlineKeyboard() }
+        );
+      } catch {
         try {
-          await ctx.api.sendMessage(Number(room.hostId), hostMsg, {
-            parse_mode: "HTML",
-          });
-        } catch {
-          // Host may have blocked the bot; continue silently
-        }
+          await ctx.api.sendMessage(Number(targetId), kickedText, { parse_mode: "HTML" });
+        } catch { /* blocked */ }
       }
+      await deleteLobbyMessage(roomId, targetId);
+    } else {
+      try {
+        await ctx.api.sendMessage(Number(targetId), kickedText, { parse_mode: "HTML" });
+      } catch { /* blocked */ }
+    }
+
+    await clearPlayerRoom(targetId);
+
+    if (result.type === "removed") {
+      await updateAllLobbyMessages(ctx, result.room, targetId);
     }
   });
 
@@ -118,61 +360,49 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
     const room = await getRoom(roomId);
 
     if (!room) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("room-not-found", { roomId }),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("room-not-found", { roomId }), show_alert: true });
       return;
     }
-
     if (room.hostId !== String(from.id)) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("not-host"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("not-host"), show_alert: true });
       return;
     }
-
     if (room.status !== "waiting") {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("room-status-playing"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("room-status-playing"), show_alert: true });
       return;
     }
-
     if (room.players.length < 2) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("not-enough-players"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("not-enough-players"), show_alert: true });
       return;
     }
 
     await setRoomStatus(roomId, "collecting_codes");
 
-    // Remove the Start Game button from the original message
-    try {
-      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
-    } catch {
-      // Message may already be edited; ignore
+    // Remove all inline buttons from every player's lobby message
+    const msgMap = await getPlayerLobbyMessages(roomId, room.players);
+    for (const player of room.players) {
+      const msgId = msgMap[player.telegramId];
+      if (!msgId) continue;
+      try {
+        await ctx.api.editMessageReplyMarkup(Number(player.telegramId), msgId, {
+          reply_markup: new InlineKeyboard(),
+        });
+      } catch { /* already edited */ }
     }
 
     await ctx.answerCallbackQuery();
 
-    // Tell every player to send their secret code — each in their own locale
     for (const player of room.players) {
-      const msg = tFor(player, "game-collecting-codes", {
-        roomId,
-        count: String(room.players.length),
-      });
       try {
-        await ctx.api.sendMessage(Number(player.telegramId), msg, {
-          parse_mode: "HTML",
-        });
-      } catch {
-        // Player blocked the bot; skip
-      }
+        await ctx.api.sendMessage(
+          Number(player.telegramId),
+          tFor(player, "game-collecting-codes", {
+            roomId,
+            count: String(room.players.length),
+          }),
+          { parse_mode: "HTML" }
+        );
+      } catch { /* blocked */ }
     }
   });
 }

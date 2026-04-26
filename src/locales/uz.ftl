@@ -20,6 +20,17 @@ profile =
 profile-not-found = Profil topilmadi. Ro'yxatdan o'tish uchun /start yuboring.
 
 # ── Room lobby ────────────────────────────────────────────────────────────────
+room-lobby =
+    🎮 <b>Xona: <code>{ $roomId }</code></b>
+
+    O'yinchilar ({ $count }):
+    { $playerList }
+
+    Do'stlaringizga kodni ulashing:
+    <code>/joinroom { $roomId }</code>
+
+label-host = (host)
+
 room-created =
     🎮 <b>Xona yaratildi!</b>
 
@@ -121,9 +132,47 @@ bluff-registered =
 
 session-expired = ⏱ Vaqt tugadi. Sessiya eskirdi, qayta urinib ko'ring.
 
+# ── Bluff penalty ─────────────────────────────────────────────────────────────
+bluff-penalty =
+    🚨 <b>Blef fosh bo'ldi!</b>
+
+    <b>{ $blufferName }</b> <b>{ $attackerName }</b> ga <code>{ $guess }</code> taxmini uchun yolg'on aytdi.
+    Haqiqiy natija: 🐂 <b>{ $realBulls }</b> Buqa, 🐄 <b>{ $realCows }</b> Sigir
+    Soxta natija:   🐂 <b>{ $fakeBulls }</b> Buqa, 🐄 <b>{ $fakeCows }</b> Sigir
+
+    🔍 Maslahat: { $blufferName } kodidagi { $position }-o'rindagi raqam — <b>{ $digit }</b>.
+
+# ── Elimination ───────────────────────────────────────────────────────────────
+player-eliminated =
+    💀 <b>{ $targetName } o'yindan chiqdi!</b>
+
+    <b>{ $attackerName }</b> { $targetName } ning kodini topdi: <code>{ $guess }</code>
+    { $attackerName } endi keyingi o'yinchiga hujum qiladi.
+
+you-cracked-code =
+    🎉 <b>Siz { $targetName } ning kodini topdingiz!</b>
+
+    Ularning siri: <code>{ $code }</code>
+    Maqsadingiz yangilandi — davom eting!
+
+# ── Endgame ───────────────────────────────────────────────────────────────────
+game-winner =
+    🏆 <b>O'yin tugadi!</b>
+
+    G'olib: <b>{ $winnerName }</b> 🎊
+
+    Xona <code>{ $roomId }</code> yopildi. O'yin uchun rahmat!
+
+leaveroom-not-in-room = ℹ️ Siz hech qanday xonada emassiz.
+leaveroom-game-active = ❌ Faol o'yin davomida xonani tark etib bo'lmaydi.
+room-dissolved = 🚫 Host <code>{ $roomId }</code> xonasini tark etdi. Xona yopildi.
+you-left-room = 👋 Siz <code>{ $roomId }</code> xonasini tark etdingiz.
+you-were-kicked = ❌ Siz <code>{ $roomId }</code> xonasidan chiqarib yuborldingiz.
+
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek
 btn-start-game = 🚀 O'yinni boshlash
 btn-tell-truth = ✅ Haqiqatni aytish
 btn-bluff = 🎭 Blef qilish
+btn-leave-room = 🚪 Xonadan chiqish

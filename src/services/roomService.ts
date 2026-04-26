@@ -14,6 +14,7 @@ export interface RoomPlayer {
   languageCode: string;
   secretCode?: string;
   hasBluffed?: boolean; // true once they have used their one bluff
+  eliminated?: boolean; // true once their code has been fully guessed (4 bulls)
 }
 
 export interface TurnEntry {
@@ -404,4 +405,237 @@ export async function recordBluff(
     JSON.stringify(bluff),
     bluff.blufferId
   );
+}
+
+// ── Phase 6 Lua scripts ───────────────────────────────────────────────────────
+
+// Eliminates a player: updates attacker's target to inherit the eliminated
+// player's target, removes eliminated from turnOrder, marks eliminated=true,
+// advances the turn, increments turnNumber.
+// Returns: activeCount>=0  -1=not found  -2=no turn order  -3=eliminated not in order
+const ELIMINATE_PLAYER_SCRIPT = `
+local key          = KEYS[1]
+local eliminatedId = ARGV[1]
+local attackerId   = ARGV[2]
+
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+
+local room = cjson.decode(raw)
+if not room.turnOrder then return -2 end
+
+local eliminatedTarget = nil
+for _, entry in ipairs(room.turnOrder) do
+  if entry.attackerId == eliminatedId then
+    eliminatedTarget = entry.targetId
+    break
+  end
+end
+if eliminatedTarget == nil then return -3 end
+
+for i = 1, #room.turnOrder do
+  if room.turnOrder[i].attackerId == attackerId then
+    room.turnOrder[i].targetId = eliminatedTarget
+    break
+  end
+end
+
+local newOrder = {}
+for _, entry in ipairs(room.turnOrder) do
+  if entry.attackerId ~= eliminatedId then
+    table.insert(newOrder, entry)
+  end
+end
+room.turnOrder = newOrder
+
+for i = 1, #room.players do
+  if room.players[i].telegramId == eliminatedId then
+    room.players[i].eliminated = true
+    break
+  end
+end
+
+local n = #room.turnOrder
+if n > 0 then
+  local nextIdx = 1
+  for i = 1, n do
+    if room.turnOrder[i].attackerId == room.currentAttackerId then
+      nextIdx = (i % n) + 1
+      break
+    end
+  end
+  room.currentAttackerId = room.turnOrder[nextIdx].attackerId
+end
+room.turnNumber = (room.turnNumber or 0) + 1
+
+redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+
+local activeCount = 0
+for _, p in ipairs(room.players) do
+  if not p.eliminated then activeCount = activeCount + 1 end
+end
+return activeCount
+`;
+
+// Marks the first unexposed bluff entry for a given bluffer as exposed.
+// Returns: 1=ok  -1=not found
+const MARK_BLUFF_EXPOSED_SCRIPT = `
+local key       = KEYS[1]
+local blufferId = ARGV[1]
+
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+
+local room = cjson.decode(raw)
+if not room.bluffQueue then return 0 end
+
+for i = 1, #room.bluffQueue do
+  if room.bluffQueue[i].blufferId == blufferId and not room.bluffQueue[i].exposed then
+    room.bluffQueue[i].exposed = true
+    break
+  end
+end
+
+redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+return 1
+`;
+
+// ── Phase 6 functions ─────────────────────────────────────────────────────────
+
+export async function eliminatePlayer(
+  roomId: string,
+  eliminatedId: string,
+  attackerId: string
+): Promise<number | null> {
+  const result = (await redis.eval(
+    ELIMINATE_PLAYER_SCRIPT,
+    1,
+    roomKey(roomId),
+    eliminatedId,
+    attackerId
+  )) as number;
+  if (result < 0) return null;
+  return result;
+}
+
+export async function markBluffExposed(
+  roomId: string,
+  blufferId: string
+): Promise<void> {
+  await redis.eval(MARK_BLUFF_EXPOSED_SCRIPT, 1, roomKey(roomId), blufferId);
+}
+
+// ── Per-player lobby message IDs (separate keys, not in room JSON) ────────────
+// Each player in a waiting room has their own lobby message that we edit live.
+
+function lobbyMsgKey(roomId: string, telegramId: string): string {
+  return `lobby_msg:${roomId}:${telegramId}`;
+}
+
+export async function setLobbyMessage(
+  roomId: string,
+  telegramId: string,
+  messageId: number
+): Promise<void> {
+  await redis.set(lobbyMsgKey(roomId, telegramId), String(messageId), "EX", ROOM_TTL_SECONDS);
+}
+
+export async function getPlayerLobbyMessages(
+  roomId: string,
+  players: RoomPlayer[]
+): Promise<Record<string, number>> {
+  if (players.length === 0) return {};
+  const pipeline = redis.pipeline();
+  for (const p of players) pipeline.get(lobbyMsgKey(roomId, p.telegramId));
+  const results = await pipeline.exec();
+  const map: Record<string, number> = {};
+  results?.forEach((res, i) => {
+    const val = res[1] as string | null;
+    if (val) map[players[i].telegramId] = Number(val);
+  });
+  return map;
+}
+
+export async function deleteLobbyMessage(
+  roomId: string,
+  telegramId: string
+): Promise<void> {
+  await redis.del(lobbyMsgKey(roomId, telegramId));
+}
+
+// ── Remove player from room ───────────────────────────────────────────────────
+// Atomically removes a player from a waiting room.
+// Host leaving dissolves the room (DEL).
+// Returns: -1=not found  -2=wrong state  -3=not in room
+//          0=dissolved (host left)  >=1=remaining player count
+const REMOVE_PLAYER_SCRIPT = `
+local key = KEYS[1]
+local tid = ARGV[1]
+
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+
+local room = cjson.decode(raw)
+if room.status ~= 'waiting' then return -2 end
+
+local found = false
+for _, p in ipairs(room.players) do
+  if p.telegramId == tid then found = true; break end
+end
+if not found then return -3 end
+
+if room.hostId == tid then
+  redis.call('DEL', key)
+  return 0
+end
+
+local newPlayers = {}
+for _, p in ipairs(room.players) do
+  if p.telegramId ~= tid then
+    table.insert(newPlayers, p)
+  end
+end
+room.players = newPlayers
+redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+return #room.players
+`;
+
+export type RemovePlayerResult =
+  | { type: "dissolved"; players: RoomPlayer[] }
+  | { type: "removed"; room: RoomData }
+  | { type: "error" };
+
+export async function removePlayer(
+  roomId: string,
+  telegramId: string
+): Promise<RemovePlayerResult> {
+  const roomBefore = await getRoom(roomId);
+
+  const code = (await redis.eval(
+    REMOVE_PLAYER_SCRIPT,
+    1,
+    roomKey(roomId),
+    telegramId
+  )) as number;
+
+  if (code < 0) return { type: "error" };
+  if (code === 0) return { type: "dissolved", players: roomBefore?.players ?? [] };
+
+  const updatedRoom = await getRoom(roomId);
+  return updatedRoom ? { type: "removed", room: updatedRoom } : { type: "error" };
+}
+
+export async function cleanupRoom(
+  roomId: string,
+  players: RoomPlayer[]
+): Promise<void> {
+  const pipeline = redis.pipeline();
+  pipeline.del(roomKey(roomId));
+  pipeline.del(pendingGuessKey(roomId));
+  for (const player of players) {
+    pipeline.del(playerRoomKey(player.telegramId));
+    pipeline.del(awaitingBluffKey(player.telegramId));
+    pipeline.del(lobbyMsgKey(roomId, player.telegramId));
+  }
+  await pipeline.exec();
 }
