@@ -1,21 +1,46 @@
 import { redis } from "../db/redis";
 
-const ROOM_TTL_SECONDS = 86400; // 24 hours
+const ROOM_TTL_SECONDS = 86400;     // 24 hours
+const AWAITING_BLUFF_TTL = 300;     // 5 minutes — clears stale bluff prompts
 const ROOM_ID_LENGTH = 6;
-// Omit ambiguous characters: 0, O, I, 1
-const ROOM_ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const ROOM_ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/I/1
+
+// ── Domain types ──────────────────────────────────────────────────────────────
 
 export interface RoomPlayer {
-  telegramId: string; // stored as string — BigInt is not JSON-serializable
+  telegramId: string;
   firstName: string;
   username?: string;
   languageCode: string;
-  secretCode?: string; // set during collecting_codes phase
+  secretCode?: string;
+  hasBluffed?: boolean; // true once they have used their one bluff
 }
 
 export interface TurnEntry {
   attackerId: string;
   targetId: string;
+}
+
+export interface BluffRecord {
+  blufferId: string;
+  attackerId: string;   // who received the fake stats
+  guess: string;
+  realBulls: number;
+  realCows: number;
+  fakeBulls: number;
+  fakeCows: number;
+  committedOnTurn: number;
+  penaltyOnTurn: number; // committedOnTurn + 3
+  exposed: boolean;
+}
+
+export interface PendingGuess {
+  roomId: string;
+  attackerId: string;
+  targetId: string;
+  guess: string;
+  realBulls: number;
+  realCows: number;
 }
 
 export interface RoomData {
@@ -24,12 +49,13 @@ export interface RoomData {
   status: "waiting" | "collecting_codes" | "playing" | "finished";
   players: RoomPlayer[];
   createdAt: number;
-  // Populated once all codes are submitted
   turnOrder?: TurnEntry[];
   currentAttackerId?: string;
+  turnNumber?: number;
+  bluffQueue?: BluffRecord[];
 }
 
-// ── Result types ─────────────────────────────────────────────────────────────
+// ── Result types ──────────────────────────────────────────────────────────────
 
 export type JoinRoomError = "ROOM_NOT_FOUND" | "ROOM_NOT_WAITING" | "ALREADY_IN_ROOM";
 export type JoinRoomResult =
@@ -73,7 +99,7 @@ return 1
 // Atomically stores a player's secret code.
 // If all players have submitted, transitions to 'playing' and builds turn order.
 // Returns: 1=accepted_waiting  2=all_collected
-//          -1=not found  -2=wrong state  -3=player not in room  -4=already set
+//          -1=not found  -2=wrong state  -3=not in room  -4=already set
 const SUBMIT_CODE_SCRIPT = `
 local key  = KEYS[1]
 local tid  = ARGV[1]
@@ -98,10 +124,7 @@ if not found then return -3 end
 
 local allReady = true
 for _, p in ipairs(room.players) do
-  if not p.secretCode then
-    allReady = false
-    break
-  end
+  if not p.secretCode then allReady = false; break end
 end
 
 if allReady then
@@ -115,15 +138,70 @@ if allReady then
       targetId   = room.players[nextIdx].telegramId
     })
   end
-  room.turnOrder          = order
-  room.currentAttackerId  = room.players[1].telegramId
+  room.turnOrder         = order
+  room.currentAttackerId = room.players[1].telegramId
+  room.turnNumber        = 0
 end
 
 redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
 if allReady then return 2 else return 1 end
 `;
 
-// Atomically updates room status, preserving the existing TTL.
+// Atomically advances to the next turn and increments turnNumber.
+// Returns: 1=ok  -1=not found  -2=no turn order
+const ADVANCE_TURN_SCRIPT = `
+local key = KEYS[1]
+
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+
+local room = cjson.decode(raw)
+if not room.turnOrder then return -2 end
+
+local n       = #room.turnOrder
+local nextIdx = 1
+for i = 1, n do
+  if room.turnOrder[i].attackerId == room.currentAttackerId then
+    nextIdx = (i % n) + 1
+    break
+  end
+end
+
+room.currentAttackerId = room.turnOrder[nextIdx].attackerId
+room.turnNumber        = (room.turnNumber or 0) + 1
+
+redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+return 1
+`;
+
+// Atomically appends a bluff record and marks the bluffer as hasBluffed.
+// Returns: 1=ok  -1=not found
+const RECORD_BLUFF_SCRIPT = `
+local key       = KEYS[1]
+local bluffJson = ARGV[1]
+local blufferId = ARGV[2]
+
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+
+local room  = cjson.decode(raw)
+local bluff = cjson.decode(bluffJson)
+
+if not room.bluffQueue then room.bluffQueue = {} end
+table.insert(room.bluffQueue, bluff)
+
+for i = 1, #room.players do
+  if room.players[i].telegramId == blufferId then
+    room.players[i].hasBluffed = true
+    break
+  end
+end
+
+redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+return 1
+`;
+
+// Atomically updates room status, preserving TTL.
 // Returns: 1=ok  -1=not found
 const SET_STATUS_SCRIPT = `
 local key    = KEYS[1]
@@ -143,9 +221,14 @@ return 1
 function roomKey(roomId: string): string {
   return `room:${roomId}`;
 }
-
 function playerRoomKey(telegramId: string): string {
   return `player:${telegramId}:room`;
+}
+function pendingGuessKey(roomId: string): string {
+  return `pending_guess:${roomId}`;
+}
+function awaitingBluffKey(telegramId: string): string {
+  return `awaiting_bluff:${telegramId}`;
 }
 
 function generateRoomId(): string {
@@ -170,6 +253,50 @@ export async function clearPlayerRoom(telegramId: string): Promise<void> {
   await redis.del(playerRoomKey(telegramId));
 }
 
+// ── Pending guess ─────────────────────────────────────────────────────────────
+
+export async function setPendingGuess(
+  roomId: string,
+  guess: PendingGuess
+): Promise<void> {
+  await redis.set(
+    pendingGuessKey(roomId),
+    JSON.stringify(guess),
+    "EX",
+    ROOM_TTL_SECONDS
+  );
+}
+
+export async function getPendingGuess(
+  roomId: string
+): Promise<PendingGuess | null> {
+  const raw = await redis.get(pendingGuessKey(roomId));
+  return raw ? (JSON.parse(raw) as PendingGuess) : null;
+}
+
+export async function clearPendingGuess(roomId: string): Promise<void> {
+  await redis.del(pendingGuessKey(roomId));
+}
+
+// ── Awaiting-bluff input ──────────────────────────────────────────────────────
+
+export async function setAwaitingBluff(
+  telegramId: string,
+  roomId: string
+): Promise<void> {
+  await redis.set(awaitingBluffKey(telegramId), roomId, "EX", AWAITING_BLUFF_TTL);
+}
+
+export async function getAwaitingBluff(
+  telegramId: string
+): Promise<string | null> {
+  return redis.get(awaitingBluffKey(telegramId));
+}
+
+export async function clearAwaitingBluff(telegramId: string): Promise<void> {
+  await redis.del(awaitingBluffKey(telegramId));
+}
+
 // ── Room operations ───────────────────────────────────────────────────────────
 
 export async function createRoom(host: RoomPlayer): Promise<string> {
@@ -177,7 +304,8 @@ export async function createRoom(host: RoomPlayer): Promise<string> {
   let attempts = 0;
 
   do {
-    if (attempts++ > 10) throw new Error("Failed to generate a unique room ID after 10 attempts");
+    if (attempts++ > 10)
+      throw new Error("Failed to generate a unique room ID after 10 attempts");
     roomId = generateRoomId();
   } while (await redis.exists(roomKey(roomId)));
 
@@ -211,15 +339,13 @@ export async function joinRoom(
   if (code === -3) return { success: false, reason: "ALREADY_IN_ROOM" };
 
   await setPlayerRoom(player.telegramId, roomId);
-
   const room = await getRoom(roomId);
   return { success: true, room: room! };
 }
 
 export async function getRoom(roomId: string): Promise<RoomData | null> {
   const raw = await redis.get(roomKey(roomId));
-  if (!raw) return null;
-  return JSON.parse(raw) as RoomData;
+  return raw ? (JSON.parse(raw) as RoomData) : null;
 }
 
 export async function setRoomStatus(
@@ -255,4 +381,27 @@ export async function submitSecretCode(
 
   const room = await getRoom(roomId);
   return { success: true, allCollected: result === 2, room: room! };
+}
+
+export async function advanceTurn(roomId: string): Promise<RoomData | null> {
+  const code = (await redis.eval(
+    ADVANCE_TURN_SCRIPT,
+    1,
+    roomKey(roomId)
+  )) as number;
+  if (code < 0) return null;
+  return getRoom(roomId);
+}
+
+export async function recordBluff(
+  roomId: string,
+  bluff: BluffRecord
+): Promise<void> {
+  await redis.eval(
+    RECORD_BLUFF_SCRIPT,
+    1,
+    roomKey(roomId),
+    JSON.stringify(bluff),
+    bluff.blufferId
+  );
 }

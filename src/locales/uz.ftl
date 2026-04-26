@@ -49,7 +49,7 @@ not-host = ❌ Faqat xona yaratuvchisi o'yinni boshlashi mumkin.
 
 room-status-playing = ℹ️ O'yin allaqachon davom etmoqda.
 
-# ── Code collection phase ─────────────────────────────────────────────────────
+# ── Code collection ───────────────────────────────────────────────────────────
 game-collecting-codes =
     🔐 <b>O'yin boshlanmoqda!</b>
 
@@ -64,21 +64,66 @@ code-accepted = ✅ Sizning kodingiz qabul qilindi. Boshqa o'yinchilarni kutmoqd
 
 code-already-set = ℹ️ Siz allaqachon yashirin kodingizni yuborgansiz.
 
-# ── Game starts ───────────────────────────────────────────────────────────────
 all-codes-collected =
-    🎯 <b>Barcha kodlar qabul qilindi!</b>
+    🎯 <b>Barcha kodlar qabul qilindi! O'yin boshlandi!</b>
 
-    O'yin boshlandi! Omad, <code>{ $roomId }</code>! 🚀
+    Xona: <code>{ $roomId }</code>
+    Omad tilaymiz! 🚀
 
+# ── Turn & guessing ───────────────────────────────────────────────────────────
 your-turn =
     🎯 <b>Sizning navbatingiz!</b>
 
     <b>{ $targetName }</b> ning yashirin 4 raqamli kodini toping.
     4 raqamli sonni yuboring.
 
+not-your-turn = ⏳ Hozir sizning navbatingiz emas. O'z navbatingizni kuting.
+
 wait-your-turn = ⏳ Hozir sizning navbatingiz emas. O'z navbatingizni kuting.
+
+guess-sent =
+    ✅ Sizning taxminingiz <b>{ $targetName }</b> ga yuborildi.
+    Javobini kuting...
+
+guess-result =
+    📊 <b>{ $targetName }</b> dan <code>{ $guess }</code> taxminingiz natijasi:
+    🐂 Buqalar: <b>{ $bulls }</b>
+    🐄 Sigirlar: <b>{ $cows }</b>
+
+# ── Bluffing ─────────────────────────────────────────────────────────────────
+bluff-or-truth-prompt =
+    🤫 <b>{ $attackerName }</b> sizning kodingizni topmoqchi!
+
+    Uning taxmini: <code>{ $guess }</code>
+    Haqiqiy natija: 🐂 <b>{ $bulls }</b> Buqa, 🐄 <b>{ $cows }</b> Sigir
+
+    { $attackerName } ga nima deysiz?
+
+you-chose-truth = ✅ Siz haqiqatni aytdingiz. Haqiqiy natija raqibga yuborildi.
+
+enter-fake-stats =
+    🎭 <b>Soxta natija</b> kiriting.
+
+    Format: <code>buqalar sigirlar</code>
+    Masalan: <code>1 2</code> (1 Buqa, 2 Sigir)
+
+    ⚠️ Yig'indi 4 dan oshmasligi kerak.
+
+invalid-fake-stats = ❌ Noto'g'ri format. 0–4 orasidagi ikki sonni yuboring, masalan: <code>1 2</code> (yig'indi ≤ 4)
+
+bluff-already-used = ⚠️ Siz blefingizni allaqachon ishlatgansiz! Haqiqatni aytishga to'g'ri keladi.
+
+bluff-registered =
+    🎭 <b>Blef qayd etildi!</b>
+
+    Soxta natija raqibga yuborildi.
+    ⏰ Ehtiyot bo'ling — 3 navbatdan so'ng haqiqat fosh bo'ladi!
+
+session-expired = ⏱ Vaqt tugadi. Sessiya eskirdi, qayta urinib ko'ring.
 
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek
 btn-start-game = 🚀 O'yinni boshlash
+btn-tell-truth = ✅ Haqiqatni aytish
+btn-bluff = 🎭 Blef qilish

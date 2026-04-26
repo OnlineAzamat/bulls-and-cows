@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Bot, session } from "grammy";
 import { MyContext, SessionData } from "./types";
 import { i18n } from "./utils/i18n";
+import { localeMiddleware } from "./middleware/locale";
 import { registerStartHandler } from "./handlers/start";
 import { registerProfileHandler } from "./handlers/profile";
 import { registerRoomHandlers } from "./handlers/room";
@@ -19,6 +20,7 @@ bot.use(
 );
 
 bot.use(i18n);
+bot.use(localeMiddleware); // restores locale from DB/Redis after restarts
 
 registerStartHandler(bot);
 registerProfileHandler(bot);

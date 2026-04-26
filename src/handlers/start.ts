@@ -1,6 +1,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { MyContext } from "../types";
 import { upsertUser } from "../services/userService";
+import { setCachedLocale } from "../utils/localeCache";
 
 export function registerStartHandler(bot: Bot<MyContext>): void {
   bot.command("start", async (ctx) => {
@@ -22,6 +23,9 @@ export function registerStartHandler(bot: Bot<MyContext>): void {
       languageCode: locale,
     });
 
+    // Warm the Redis locale cache so localeMiddleware returns it immediately.
+    // This also survives server restarts without a DB round-trip.
+    await setCachedLocale(String(from.id), locale);
     await ctx.i18n.setLocale(locale);
 
     await ctx.editMessageText(ctx.t("welcome"), { parse_mode: "HTML" });

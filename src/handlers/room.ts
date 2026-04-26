@@ -1,6 +1,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { MyContext } from "../types";
 import { i18n } from "../utils/i18n";
+import { getCachedLocale } from "../utils/localeCache";
 import {
   createRoom,
   joinRoom,
@@ -8,6 +9,14 @@ import {
   setRoomStatus,
   RoomPlayer,
 } from "../services/roomService";
+
+// Reads the user's locale from Redis cache (set during language selection).
+// Falls back to ctx.i18n.getLocale() only if the cache is cold (e.g. new user
+// who hasn't chosen a language yet).
+async function resolveLocale(ctx: MyContext): Promise<string> {
+  const telegramId = String(ctx.from!.id);
+  return (await getCachedLocale(telegramId)) ?? (await ctx.i18n.getLocale());
+}
 
 // Translate a message for a specific player using their stored languageCode.
 // Used when sending outbound messages to users other than the current ctx.from.
@@ -19,7 +28,7 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
   // ── /createroom ──────────────────────────────────────────────────────────
   bot.command("createroom", async (ctx) => {
     const from = ctx.from!;
-    const locale = await ctx.i18n.getLocale();
+    const locale = await resolveLocale(ctx);
 
     const host: RoomPlayer = {
       telegramId: String(from.id),
@@ -51,7 +60,7 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
     }
 
     const from = ctx.from!;
-    const locale = await ctx.i18n.getLocale();
+    const locale = await resolveLocale(ctx);
 
     const player: RoomPlayer = {
       telegramId: String(from.id),
