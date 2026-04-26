@@ -7,6 +7,7 @@ import { registerStartHandler } from "./handlers/start";
 import { registerProfileHandler } from "./handlers/profile";
 import { registerRoomHandlers } from "./handlers/room";
 import { registerGameHandlers } from "./handlers/game";
+import { registerTopHandler } from "./handlers/top";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set in .env");
@@ -26,6 +27,7 @@ registerStartHandler(bot);
 registerProfileHandler(bot);
 registerRoomHandlers(bot);
 registerGameHandlers(bot);
+registerTopHandler(bot);
 
 bot.catch((err) => {
   const ctx = err.ctx;

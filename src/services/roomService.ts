@@ -13,8 +13,10 @@ export interface RoomPlayer {
   username?: string;
   languageCode: string;
   secretCode?: string;
-  hasBluffed?: boolean; // true once they have used their one bluff
-  eliminated?: boolean; // true once their code has been fully guessed (4 bulls)
+  hasBluffed?: boolean;
+  eliminated?: boolean;
+  consecutiveHonestCycles?: number; // defender told truth N times in a row
+  swapPerkAvailable?: boolean;       // unlocked at every 4th honest cycle
 }
 
 export interface TurnEntry {
@@ -296,6 +298,24 @@ export async function getAwaitingBluff(
 
 export async function clearAwaitingBluff(telegramId: string): Promise<void> {
   await redis.del(awaitingBluffKey(telegramId));
+}
+
+// ── Awaiting-swap input ───────────────────────────────────────────────────────
+
+function awaitingSwapKey(telegramId: string): string {
+  return `awaiting_swap:${telegramId}`;
+}
+
+export async function setAwaitingSwap(telegramId: string, roomId: string): Promise<void> {
+  await redis.set(awaitingSwapKey(telegramId), roomId, "EX", AWAITING_BLUFF_TTL);
+}
+
+export async function getAwaitingSwap(telegramId: string): Promise<string | null> {
+  return redis.get(awaitingSwapKey(telegramId));
+}
+
+export async function clearAwaitingSwap(telegramId: string): Promise<void> {
+  await redis.del(awaitingSwapKey(telegramId));
 }
 
 // ── Room operations ───────────────────────────────────────────────────────────
@@ -625,6 +645,103 @@ export async function removePlayer(
   return updatedRoom ? { type: "removed", room: updatedRoom } : { type: "error" };
 }
 
+// ── Honest-perk Lua scripts ───────────────────────────────────────────────────
+
+// Increments consecutiveHonestCycles for a player; sets swapPerkAvailable at
+// every 4th honest cycle (4, 8, 12, …).  Returns the new count or -1/-2.
+const INCREMENT_HONEST_CYCLES_SCRIPT = `
+local key = KEYS[1]
+local tid = ARGV[1]
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+local room = cjson.decode(raw)
+for i = 1, #room.players do
+  if room.players[i].telegramId == tid then
+    local c = (room.players[i].consecutiveHonestCycles or 0) + 1
+    room.players[i].consecutiveHonestCycles = c
+    if c % 4 == 0 then room.players[i].swapPerkAvailable = true end
+    redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+    return c
+  end
+end
+return -2
+`;
+
+// Resets consecutiveHonestCycles and clears swapPerkAvailable (called on bluff).
+const RESET_HONEST_CYCLES_SCRIPT = `
+local key = KEYS[1]
+local tid = ARGV[1]
+local raw = redis.call('GET', key)
+if not raw then return -1 end
+local room = cjson.decode(raw)
+for i = 1, #room.players do
+  if room.players[i].telegramId == tid then
+    room.players[i].consecutiveHonestCycles = 0
+    room.players[i].swapPerkAvailable = false
+    redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+    return 1
+  end
+end
+return -2
+`;
+
+// Swaps two digit positions (1-based) in secretCode; clears swapPerkAvailable.
+// Returns the new 4-char code, or empty string on error.
+const SWAP_CODE_DIGITS_SCRIPT = `
+local key  = KEYS[1]
+local tid  = ARGV[1]
+local p1   = tonumber(ARGV[2])
+local p2   = tonumber(ARGV[3])
+local raw  = redis.call('GET', key)
+if not raw then return '' end
+local room = cjson.decode(raw)
+for i = 1, #room.players do
+  if room.players[i].telegramId == tid then
+    local code = room.players[i].secretCode
+    if not code or #code ~= 4 then return '' end
+    local chars = {}
+    for j = 1, 4 do chars[j] = code:sub(j, j) end
+    local tmp = chars[p1]; chars[p1] = chars[p2]; chars[p2] = tmp
+    local newCode = table.concat(chars)
+    room.players[i].secretCode      = newCode
+    room.players[i].swapPerkAvailable = false
+    redis.call('SET', key, cjson.encode(room), 'KEEPTTL')
+    return newCode
+  end
+end
+return ''
+`;
+
+export async function incrementHonestCycles(
+  roomId: string,
+  telegramId: string
+): Promise<number> {
+  const result = (await redis.eval(
+    INCREMENT_HONEST_CYCLES_SCRIPT, 1, roomKey(roomId), telegramId
+  )) as number;
+  return result > 0 ? result : 0;
+}
+
+export async function resetHonestCycles(
+  roomId: string,
+  telegramId: string
+): Promise<void> {
+  await redis.eval(RESET_HONEST_CYCLES_SCRIPT, 1, roomKey(roomId), telegramId);
+}
+
+export async function swapCodeDigits(
+  roomId: string,
+  telegramId: string,
+  pos1: number,
+  pos2: number
+): Promise<string | null> {
+  const result = (await redis.eval(
+    SWAP_CODE_DIGITS_SCRIPT, 1, roomKey(roomId),
+    telegramId, String(pos1), String(pos2)
+  )) as string;
+  return result.length === 4 ? result : null;
+}
+
 export async function cleanupRoom(
   roomId: string,
   players: RoomPlayer[]
@@ -635,6 +752,7 @@ export async function cleanupRoom(
   for (const player of players) {
     pipeline.del(playerRoomKey(player.telegramId));
     pipeline.del(awaitingBluffKey(player.telegramId));
+    pipeline.del(awaitingSwapKey(player.telegramId));
     pipeline.del(lobbyMsgKey(roomId, player.telegramId));
   }
   await pipeline.exec();

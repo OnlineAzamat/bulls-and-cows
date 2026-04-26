@@ -13,91 +13,130 @@ import {
   setAwaitingBluff,
   getAwaitingBluff,
   clearAwaitingBluff,
+  setAwaitingSwap,
+  getAwaitingSwap,
+  clearAwaitingSwap,
   advanceTurn,
   recordBluff,
   eliminatePlayer,
   markBluffExposed,
   cleanupRoom,
   setRoomStatus,
+  incrementHonestCycles,
+  resetHonestCycles,
+  swapCodeDigits,
   RoomData,
   RoomPlayer,
   PendingGuess,
   BluffRecord,
 } from "../services/roomService";
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-function tFor(
-  player: RoomPlayer,
-  key: string,
-  vars?: Record<string, string>
-): string {
-  return i18n.t(player.languageCode, key, vars);
+const TURN_TIMEOUT_MS  = 2 * 60 * 1_000;
+const BLUFF_TIMEOUT_MS = 2 * 60 * 1_000;
+
+// ── Timer management ──────────────────────────────────────────────────────────
+// Keys encode (type, roomId, turnNumber) so stale timers never double-fire.
+
+const activeTimers = new Map<string, NodeJS.Timeout>();
+
+function setTimer(key: string, ms: number, cb: () => void): void {
+  const old = activeTimers.get(key);
+  if (old) clearTimeout(old);
+  activeTimers.set(key, setTimeout(() => {
+    activeTimers.delete(key);
+    cb();
+  }, ms));
 }
 
-function displayName(player: RoomPlayer): string {
-  return player.username ? `@${player.username}` : player.firstName;
+function cancelTimer(key: string): void {
+  const t = activeTimers.get(key);
+  if (t) { clearTimeout(t); activeTimers.delete(key); }
 }
 
-function resolveCurrentTurn(
-  room: RoomData
-): { attacker: RoomPlayer; target: RoomPlayer } | null {
+function turnKey(roomId: string, turn: number): string { return `turn:${roomId}:${turn}`; }
+function bluffKey(roomId: string, turn: number): string { return `bluff:${roomId}:${turn}`; }
+
+// ── Pure helpers ──────────────────────────────────────────────────────────────
+
+function tFor(p: RoomPlayer, key: string, vars?: Record<string, string>): string {
+  return i18n.t(p.languageCode, key, vars);
+}
+
+function displayName(p: RoomPlayer): string {
+  return p.username ? `@${p.username}` : p.firstName;
+}
+
+function resolveCurrentTurn(room: RoomData): { attacker: RoomPlayer; target: RoomPlayer } | null {
   if (!room.turnOrder || !room.currentAttackerId) return null;
-  const entry = room.turnOrder.find(
-    (e) => e.attackerId === room.currentAttackerId
-  );
-  if (!entry) return null;
-  const attacker = room.players.find((p) => p.telegramId === entry.attackerId);
-  const target = room.players.find((p) => p.telegramId === entry.targetId);
+  const e = room.turnOrder.find(e => e.attackerId === room.currentAttackerId);
+  if (!e) return null;
+  const attacker = room.players.find(p => p.telegramId === e.attackerId);
+  const target   = room.players.find(p => p.telegramId === e.targetId);
   if (!attacker || !target) return null;
   return { attacker, target };
 }
 
-async function sendTurnPrompt(ctx: MyContext, room: RoomData): Promise<void> {
+// ── Bot-based helpers (work both from handlers and from timer callbacks) ───────
+
+async function sendTurnPrompt(bot: Bot<MyContext>, room: RoomData): Promise<void> {
   const turn = resolveCurrentTurn(room);
   if (!turn) return;
-
   const { attacker, target } = turn;
+  const tNum = room.turnNumber ?? 0;
+
+  // Offer swap perk if earned
+  if (attacker.swapPerkAvailable) {
+    const kb = new InlineKeyboard().text(
+      tFor(attacker, "btn-use-swap-perk"),
+      `claim_swap:${room.roomId}`
+    );
+    try {
+      await bot.api.sendMessage(
+        Number(attacker.telegramId),
+        tFor(attacker, "swap-perk-offer"),
+        { parse_mode: "HTML", reply_markup: kb }
+      );
+    } catch { /* blocked */ }
+  }
+
   try {
-    await ctx.api.sendMessage(
+    await bot.api.sendMessage(
       Number(attacker.telegramId),
-      tFor(attacker, "your-turn", {
-        targetName: displayName(target),
-        roomId: room.roomId,
-      }),
+      tFor(attacker, "your-turn", { targetName: displayName(target), roomId: room.roomId }),
       { parse_mode: "HTML" }
     );
-  } catch { /* player blocked the bot */ }
+  } catch { /* blocked */ }
+
+  setTimer(turnKey(room.roomId, tNum), TURN_TIMEOUT_MS, () => {
+    void handleTurnAFK(bot, room.roomId, attacker.telegramId, tNum);
+  });
 }
 
-// ── Phase 6: bluff penalties ──────────────────────────────────────────────────
-
 async function applyBluffPenalty(
-  ctx: MyContext,
+  bot: Bot<MyContext>,
   room: RoomData,
   bluff: BluffRecord
 ): Promise<void> {
-  const bluffer = room.players.find((p) => p.telegramId === bluff.blufferId);
+  const bluffer = room.players.find(p => p.telegramId === bluff.blufferId);
   if (!bluffer?.secretCode) return;
+  const deceived = room.players.find(p => p.telegramId === bluff.attackerId) ?? bluffer;
 
-  const deceived = room.players.find((p) => p.telegramId === bluff.attackerId) ?? bluffer;
-  const revealedDigit = bluffer.secretCode[0];
-
-  for (const player of room.players) {
-    if (player.eliminated) continue;
+  for (const p of room.players.filter(p => !p.eliminated)) {
     try {
-      await ctx.api.sendMessage(
-        Number(player.telegramId),
-        tFor(player, "bluff-penalty", {
-          blufferName: displayName(bluffer),
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        tFor(p, "bluff-penalty", {
+          blufferName:  displayName(bluffer),
           attackerName: displayName(deceived),
-          guess: bluff.guess,
-          realBulls: String(bluff.realBulls),
-          realCows: String(bluff.realCows),
-          fakeBulls: String(bluff.fakeBulls),
-          fakeCows: String(bluff.fakeCows),
-          position: "1",
-          digit: revealedDigit,
+          guess:        bluff.guess,
+          realBulls:    String(bluff.realBulls),
+          realCows:     String(bluff.realCows),
+          fakeBulls:    String(bluff.fakeBulls),
+          fakeCows:     String(bluff.fakeCows),
+          position:     "1",
+          digit:        bluffer.secretCode[0],
         }),
         { parse_mode: "HTML" }
       );
@@ -106,64 +145,51 @@ async function applyBluffPenalty(
 }
 
 async function checkAndApplyBluffPenalties(
-  ctx: MyContext,
+  bot: Bot<MyContext>,
   room: RoomData
 ): Promise<void> {
-  if (!room.bluffQueue || room.bluffQueue.length === 0) return;
-
-  const currentTurn = room.turnNumber ?? 0;
-  const due = room.bluffQueue.filter(
-    (b) => !b.exposed && currentTurn >= b.penaltyOnTurn
-  );
-
-  for (const bluff of due) {
-    await applyBluffPenalty(ctx, room, bluff);
+  if (!room.bluffQueue?.length) return;
+  const cur = room.turnNumber ?? 0;
+  for (const bluff of room.bluffQueue.filter(b => !b.exposed && cur >= b.penaltyOnTurn)) {
+    await applyBluffPenalty(bot, room, bluff);
     await markBluffExposed(room.roomId, bluff.blufferId);
   }
 }
 
-// ── Phase 6: endgame ──────────────────────────────────────────────────────────
-
 async function broadcastEndGame(
-  ctx: MyContext,
+  bot: Bot<MyContext>,
   room: RoomData,
   winner: RoomPlayer
 ): Promise<void> {
   await setRoomStatus(room.roomId, "finished");
 
-  for (const player of room.players) {
+  for (const p of room.players) {
     try {
-      await ctx.api.sendMessage(
-        Number(player.telegramId),
-        tFor(player, "game-winner", {
-          winnerName: displayName(winner),
-          roomId: room.roomId,
-        }),
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        tFor(p, "game-winner", { winnerName: displayName(winner), roomId: room.roomId }),
         { parse_mode: "HTML" }
       );
     } catch { /* blocked */ }
   }
 
-  for (const player of room.players) {
+  for (const p of room.players) {
     try {
       await prisma.user.update({
-        where: { telegramId: BigInt(player.telegramId) },
+        where: { telegramId: BigInt(p.telegramId) },
         data: {
           gamesPlayed: { increment: 1 },
-          ...(player.telegramId === winner.telegramId
-            ? { wins: { increment: 1 } }
-            : {}),
+          ...(p.telegramId === winner.telegramId ? { wins: { increment: 1 } } : {}),
         },
       });
-    } catch { /* user may not be in DB; skip silently */ }
+    } catch { /* user not in DB */ }
   }
 
   await cleanupRoom(room.roomId, room.players);
 }
 
-// ── Phase 6: elimination ──────────────────────────────────────────────────────
-
 async function handleElimination(
+  bot: Bot<MyContext>,
   ctx: MyContext,
   roomId: string,
   room: RoomData,
@@ -171,14 +197,15 @@ async function handleElimination(
   target: RoomPlayer,
   guess: string
 ): Promise<void> {
-  // Broadcast to everyone (including the eliminated player)
-  for (const player of room.players) {
+  cancelTimer(turnKey(roomId, room.turnNumber ?? 0));
+
+  for (const p of room.players) {
     try {
-      await ctx.api.sendMessage(
-        Number(player.telegramId),
-        tFor(player, "player-eliminated", {
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        tFor(p, "player-eliminated", {
           attackerName: displayName(attacker),
-          targetName: displayName(target),
+          targetName:   displayName(target),
           guess,
         }),
         { parse_mode: "HTML" }
@@ -186,9 +213,8 @@ async function handleElimination(
     } catch { /* blocked */ }
   }
 
-  // Private confirmation to the attacker with the revealed code
   try {
-    await ctx.api.sendMessage(
+    await bot.api.sendMessage(
       Number(attacker.telegramId),
       tFor(attacker, "you-cracked-code", {
         targetName: displayName(target),
@@ -198,69 +224,144 @@ async function handleElimination(
     );
   } catch { /* blocked */ }
 
-  const activeCount = await eliminatePlayer(
-    roomId,
-    target.telegramId,
-    attacker.telegramId
-  );
-
-  if (activeCount === null) return; // Redis error; leave game in broken state
+  const activeCount = await eliminatePlayer(roomId, target.telegramId, attacker.telegramId);
+  if (activeCount === null) return;
 
   if (activeCount <= 1) {
-    const updatedRoom = await getRoom(roomId);
-    if (!updatedRoom) return;
-    const winner = updatedRoom.players.find((p) => !p.eliminated);
-    if (winner) await broadcastEndGame(ctx, updatedRoom, winner);
+    const updated = await getRoom(roomId);
+    if (!updated) return;
+    const winner = updated.players.find(p => !p.eliminated);
+    if (winner) await broadcastEndGame(bot, updated, winner);
     return;
   }
 
-  const updatedRoom = await getRoom(roomId);
-  if (!updatedRoom) return;
-
-  await checkAndApplyBluffPenalties(ctx, updatedRoom);
-  await sendTurnPrompt(ctx, updatedRoom);
+  const updated = await getRoom(roomId);
+  if (!updated) return;
+  await checkAndApplyBluffPenalties(bot, updated);
+  await sendTurnPrompt(bot, updated);
 }
 
-// ── Phase 4: secret-code collection ──────────────────────────────────────────
+// ── AFK handlers (called from timers, no ctx) ─────────────────────────────────
 
-async function broadcastGameStart(ctx: MyContext, room: RoomData): Promise<void> {
-  for (const player of room.players) {
+async function handleTurnAFK(
+  bot: Bot<MyContext>,
+  roomId: string,
+  attackerId: string,
+  expectedTurn: number
+): Promise<void> {
+  const room = await getRoom(roomId);
+  if (!room || room.status !== "playing") return;
+  if (room.currentAttackerId !== attackerId) return;
+  if ((room.turnNumber ?? 0) !== expectedTurn) return;
+
+  const attacker = room.players.find(p => p.telegramId === attackerId);
+  if (!attacker) return;
+
+  await clearAwaitingSwap(attackerId);
+
+  for (const p of room.players.filter(p => !p.eliminated)) {
     try {
-      await ctx.api.sendMessage(
-        Number(player.telegramId),
-        tFor(player, "all-codes-collected", { roomId: room.roomId }),
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        tFor(p, "turn-skipped-afk", { playerName: displayName(attacker) }),
         { parse_mode: "HTML" }
       );
     } catch { /* blocked */ }
   }
-  await sendTurnPrompt(ctx, room);
+
+  const updated = await advanceTurn(roomId);
+  if (updated) {
+    await checkAndApplyBluffPenalties(bot, updated);
+    await sendTurnPrompt(bot, updated);
+  }
+}
+
+async function handleBluffAFK(
+  bot: Bot<MyContext>,
+  roomId: string,
+  targetId: string,
+  expectedTurn: number
+): Promise<void> {
+  const room = await getRoom(roomId);
+  if (!room || room.status !== "playing") return;
+  if ((room.turnNumber ?? 0) !== expectedTurn) return;
+
+  const pending = await getPendingGuess(roomId);
+  if (!pending || pending.targetId !== targetId) return;
+
+  const attacker = room.players.find(p => p.telegramId === pending.attackerId);
+  const target   = room.players.find(p => p.telegramId === targetId);
+  if (!attacker || !target) return;
+
+  await clearAwaitingBluff(targetId);
+
+  try {
+    await bot.api.sendMessage(
+      Number(targetId),
+      tFor(target, "bluff-timeout-auto-truth"),
+      { parse_mode: "HTML" }
+    );
+  } catch { /* blocked */ }
+
+  try {
+    await bot.api.sendMessage(
+      Number(attacker.telegramId),
+      tFor(attacker, "guess-result", {
+        targetName: displayName(target),
+        guess:      pending.guess,
+        bulls:      String(pending.realBulls),
+        cows:       String(pending.realCows),
+      }),
+      { parse_mode: "HTML" }
+    );
+  } catch { /* blocked */ }
+
+  await clearPendingGuess(roomId);
+  await incrementHonestCycles(roomId, targetId);
+
+  const updated = await advanceTurn(roomId);
+  if (updated) {
+    await checkAndApplyBluffPenalties(bot, updated);
+    await sendTurnPrompt(bot, updated);
+  }
+}
+
+// ── Code collection ───────────────────────────────────────────────────────────
+
+async function broadcastGameStart(bot: Bot<MyContext>, room: RoomData): Promise<void> {
+  for (const p of room.players) {
+    try {
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        tFor(p, "all-codes-collected", { roomId: room.roomId }),
+        { parse_mode: "HTML" }
+      );
+    } catch { /* blocked */ }
+  }
+  await sendTurnPrompt(bot, room);
 }
 
 async function handleCodeCollection(
   ctx: MyContext,
+  bot: Bot<MyContext>,
   telegramId: string,
   roomId: string,
   code: string
 ): Promise<void> {
   const result = await submitSecretCode(roomId, telegramId, code);
-
   if (!result.success) {
-    if (result.reason === "CODE_ALREADY_SET") {
-      await ctx.reply(ctx.t("code-already-set"));
-    }
+    if (result.reason === "CODE_ALREADY_SET") await ctx.reply(ctx.t("code-already-set"));
     return;
   }
-
   await ctx.reply(ctx.t("code-accepted"));
-  if (result.allCollected) {
-    await broadcastGameStart(ctx, result.room);
-  }
+  if (result.allCollected) await broadcastGameStart(bot, result.room);
 }
 
-// ── Phase 5: turn-based guessing ──────────────────────────────────────────────
+// ── Turn-based guessing ───────────────────────────────────────────────────────
 
 async function handleGuess(
   ctx: MyContext,
+  bot: Bot<MyContext>,
   telegramId: string,
   roomId: string,
   guess: string,
@@ -271,108 +372,91 @@ async function handleGuess(
     return;
   }
 
-  const entry = room.turnOrder?.find((e) => e.attackerId === telegramId);
-  const target = entry
-    ? room.players.find((p) => p.telegramId === entry.targetId)
-    : undefined;
+  cancelTimer(turnKey(roomId, room.turnNumber ?? 0));
 
+  const entry  = room.turnOrder?.find(e => e.attackerId === telegramId);
+  const target = entry ? room.players.find(p => p.telegramId === entry.targetId) : undefined;
   if (!target?.secretCode) return;
 
   const { bulls, cows } = calculateBullsAndCows(guess, target.secretCode);
-  const attacker = room.players.find((p) => p.telegramId === telegramId)!;
+  const attacker = room.players.find(p => p.telegramId === telegramId)!;
 
-  // Exact match — eliminate the target, no truth/bluff needed
   if (bulls === 4) {
-    await handleElimination(ctx, roomId, room, attacker, target, guess);
+    await handleElimination(bot, ctx, roomId, room, attacker, target, guess);
     return;
   }
 
-  const pending: PendingGuess = {
-    roomId,
-    attackerId: telegramId,
-    targetId: target.telegramId,
-    guess,
-    realBulls: bulls,
-    realCows: cows,
-  };
-  await setPendingGuess(roomId, pending);
+  await setPendingGuess(roomId, { roomId, attackerId: telegramId, targetId: target.telegramId, guess, realBulls: bulls, realCows: cows });
 
-  await ctx.reply(ctx.t("guess-sent", { targetName: displayName(target) }), {
-    parse_mode: "HTML",
-  });
+  await ctx.reply(ctx.t("guess-sent", { targetName: displayName(target) }), { parse_mode: "HTML" });
 
-  // Hide the bluff button if target already used their one bluff
-  const keyboard = new InlineKeyboard().text(
-    tFor(target, "btn-tell-truth"),
-    `truth:${roomId}`
-  );
-  if (!target.hasBluffed) {
-    keyboard.text(tFor(target, "btn-bluff"), `bluff:${roomId}`);
-  }
+  const kb = new InlineKeyboard().text(tFor(target, "btn-tell-truth"), `truth:${roomId}`);
+  if (!target.hasBluffed) kb.text(tFor(target, "btn-bluff"), `bluff:${roomId}`);
 
   try {
-    await ctx.api.sendMessage(
+    await bot.api.sendMessage(
       Number(target.telegramId),
       tFor(target, "bluff-or-truth-prompt", {
-        attackerName: displayName(attacker),
-        guess,
-        bulls: String(bulls),
-        cows: String(cows),
+        attackerName: displayName(attacker), guess,
+        bulls: String(bulls), cows: String(cows),
       }),
-      { parse_mode: "HTML", reply_markup: keyboard }
+      { parse_mode: "HTML", reply_markup: kb }
     );
-  } catch { /* target blocked bot */ }
+  } catch { /* blocked */ }
+
+  setTimer(bluffKey(roomId, room.turnNumber ?? 0), BLUFF_TIMEOUT_MS, () => {
+    void handleBluffAFK(bot, roomId, target.telegramId, room.turnNumber ?? 0);
+  });
 }
 
 async function processTruth(
   ctx: MyContext,
+  bot: Bot<MyContext>,
   roomId: string,
   pending: PendingGuess,
   room: RoomData
 ): Promise<void> {
-  const attacker = room.players.find((p) => p.telegramId === pending.attackerId)!;
-  const target = room.players.find((p) => p.telegramId === pending.targetId)!;
+  cancelTimer(bluffKey(roomId, room.turnNumber ?? 0));
+
+  const attacker = room.players.find(p => p.telegramId === pending.attackerId)!;
+  const target   = room.players.find(p => p.telegramId === pending.targetId)!;
 
   try {
-    await ctx.api.sendMessage(
+    await bot.api.sendMessage(
       Number(attacker.telegramId),
       tFor(attacker, "guess-result", {
-        targetName: displayName(target),
-        guess: pending.guess,
-        bulls: String(pending.realBulls),
-        cows: String(pending.realCows),
+        targetName: displayName(target), guess: pending.guess,
+        bulls: String(pending.realBulls), cows: String(pending.realCows),
       }),
       { parse_mode: "HTML" }
     );
   } catch { /* blocked */ }
 
   await clearPendingGuess(roomId);
-  const updatedRoom = await advanceTurn(roomId);
-  if (updatedRoom) {
-    await checkAndApplyBluffPenalties(ctx, updatedRoom);
-    await sendTurnPrompt(ctx, updatedRoom);
+  await incrementHonestCycles(roomId, pending.targetId);
+
+  const updated = await advanceTurn(roomId);
+  if (updated) {
+    await checkAndApplyBluffPenalties(bot, updated);
+    await sendTurnPrompt(bot, updated);
   }
 }
 
 async function handleFakeStatsInput(
   ctx: MyContext,
+  bot: Bot<MyContext>,
   telegramId: string,
   roomId: string,
   text: string
 ): Promise<void> {
-  const match = text.match(/^([0-4])\s+([0-4])$/);
-  if (!match) {
+  const m = text.match(/^([0-4])\s+([0-4])$/);
+  if (!m || Number(m[1]) + Number(m[2]) > 4) {
     await ctx.reply(ctx.t("invalid-fake-stats"), { parse_mode: "HTML" });
     return;
   }
 
-  const fakeBulls = Number(match[1]);
-  const fakeCows = Number(match[2]);
-
-  if (fakeBulls + fakeCows > 4) {
-    await ctx.reply(ctx.t("invalid-fake-stats"), { parse_mode: "HTML" });
-    return;
-  }
+  const fakeBulls = Number(m[1]);
+  const fakeCows  = Number(m[2]);
 
   const pending = await getPendingGuess(roomId);
   if (!pending) {
@@ -382,50 +466,90 @@ async function handleFakeStatsInput(
   }
 
   const room = await getRoom(roomId);
-  if (!room) {
-    await clearAwaitingBluff(telegramId);
-    return;
-  }
+  if (!room) { await clearAwaitingBluff(telegramId); return; }
 
-  const attacker = room.players.find((p) => p.telegramId === pending.attackerId)!;
-  const bluffer = room.players.find((p) => p.telegramId === telegramId)!;
+  cancelTimer(bluffKey(roomId, room.turnNumber ?? 0));
+
+  const attacker = room.players.find(p => p.telegramId === pending.attackerId)!;
+  const bluffer  = room.players.find(p => p.telegramId === telegramId)!;
 
   try {
-    await ctx.api.sendMessage(
+    await bot.api.sendMessage(
       Number(attacker.telegramId),
       tFor(attacker, "guess-result", {
-        targetName: displayName(bluffer),
-        guess: pending.guess,
-        bulls: String(fakeBulls),
-        cows: String(fakeCows),
+        targetName: displayName(bluffer), guess: pending.guess,
+        bulls: String(fakeBulls), cows: String(fakeCows),
       }),
       { parse_mode: "HTML" }
     );
   } catch { /* blocked */ }
 
   const bluffRecord: BluffRecord = {
-    blufferId: telegramId,
-    attackerId: pending.attackerId,
+    blufferId: telegramId, attackerId: pending.attackerId,
     guess: pending.guess,
-    realBulls: pending.realBulls,
-    realCows: pending.realCows,
-    fakeBulls,
-    fakeCows,
+    realBulls: pending.realBulls, realCows: pending.realCows,
+    fakeBulls, fakeCows,
     committedOnTurn: room.turnNumber ?? 0,
     penaltyOnTurn: (room.turnNumber ?? 0) + 3,
     exposed: false,
   };
   await recordBluff(roomId, bluffRecord);
+  await resetHonestCycles(roomId, telegramId);
 
   await ctx.reply(ctx.t("bluff-registered"), { parse_mode: "HTML" });
-
   await clearAwaitingBluff(telegramId);
   await clearPendingGuess(roomId);
 
-  const updatedRoom = await advanceTurn(roomId);
-  if (updatedRoom) {
-    await checkAndApplyBluffPenalties(ctx, updatedRoom);
-    await sendTurnPrompt(ctx, updatedRoom);
+  const updated = await advanceTurn(roomId);
+  if (updated) {
+    await checkAndApplyBluffPenalties(bot, updated);
+    await sendTurnPrompt(bot, updated);
+  }
+}
+
+// ── Swap perk input ───────────────────────────────────────────────────────────
+
+async function handleSwapInput(
+  ctx: MyContext,
+  bot: Bot<MyContext>,
+  telegramId: string,
+  roomId: string,
+  text: string
+): Promise<void> {
+  const m = text.match(/^([1-4])\s+([1-4])$/);
+  if (!m || m[1] === m[2]) {
+    await ctx.reply(ctx.t("swap-perk-invalid-positions"), { parse_mode: "HTML" });
+    return;
+  }
+
+  const newCode = await swapCodeDigits(roomId, telegramId, Number(m[1]), Number(m[2]));
+  await clearAwaitingSwap(telegramId);
+
+  if (!newCode) {
+    await ctx.reply(ctx.t("swap-perk-expired"));
+    return;
+  }
+
+  await ctx.reply(ctx.t("swap-perk-used"), { parse_mode: "HTML" });
+
+  const room = await getRoom(roomId);
+  if (room) {
+    const swapper = room.players.find(p => p.telegramId === telegramId);
+    if (swapper) {
+      for (const p of room.players.filter(p => !p.eliminated && p.telegramId !== telegramId)) {
+        try {
+          await bot.api.sendMessage(
+            Number(p.telegramId),
+            tFor(p, "swap-perk-broadcast", { playerName: displayName(swapper) }),
+            { parse_mode: "HTML" }
+          );
+        } catch { /* blocked */ }
+      }
+    }
+    // Restart the AFK turn timer — fresh 2 min to make their guess
+    setTimer(turnKey(roomId, room.turnNumber ?? 0), TURN_TIMEOUT_MS, () => {
+      void handleTurnAFK(bot, roomId, telegramId, room.turnNumber ?? 0);
+    });
   }
 }
 
@@ -439,29 +563,20 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
 
     const pending = await getPendingGuess(roomId);
     if (!pending) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("session-expired"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("session-expired"), show_alert: true });
       return;
     }
     if (pending.targetId !== telegramId) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("not-your-turn"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("not-your-turn"), show_alert: true });
       return;
     }
 
     await ctx.answerCallbackQuery();
-    try {
-      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
-    } catch { /* already edited */ }
-
+    try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
     await ctx.reply(ctx.t("you-chose-truth"), { parse_mode: "HTML" });
 
     const room = await getRoom(roomId);
-    if (room) await processTruth(ctx, roomId, pending, room);
+    if (room) await processTruth(ctx, bot, roomId, pending, room);
   });
 
   // ── Bluff callback ───────────────────────────────────────────────────────
@@ -471,62 +586,82 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
 
     const pending = await getPendingGuess(roomId);
     if (!pending) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("session-expired"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("session-expired"), show_alert: true });
       return;
     }
     if (pending.targetId !== telegramId) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("not-your-turn"),
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: ctx.t("not-your-turn"), show_alert: true });
       return;
     }
 
     const room = await getRoom(roomId);
     if (!room) return;
 
-    const bluffer = room.players.find((p) => p.telegramId === telegramId);
-
-    if (bluffer?.hasBluffed) {
-      await ctx.answerCallbackQuery({
-        text: ctx.t("bluff-already-used"),
-        show_alert: true,
-      });
-      try {
-        await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
-      } catch { /* already edited */ }
-      await processTruth(ctx, roomId, pending, room);
+    if (room.players.find(p => p.telegramId === telegramId)?.hasBluffed) {
+      await ctx.answerCallbackQuery({ text: ctx.t("bluff-already-used"), show_alert: true });
+      try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
+      await processTruth(ctx, bot, roomId, pending, room);
       return;
     }
 
     await ctx.answerCallbackQuery();
-    try {
-      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
-    } catch { /* already edited */ }
+    try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
 
     await setAwaitingBluff(telegramId, roomId);
     await ctx.reply(ctx.t("enter-fake-stats"), { parse_mode: "HTML" });
+
+    // Restart timer for fake-stats input phase
+    setTimer(bluffKey(roomId, room.turnNumber ?? 0), BLUFF_TIMEOUT_MS, () => {
+      void handleBluffAFK(bot, roomId, telegramId, room.turnNumber ?? 0);
+    });
   });
 
-  // ── All text messages: routes by priority ────────────────────────────────
-  bot.on("message:text", async (ctx) => {
-    const from = ctx.from;
-    if (!from) return;
+  // ── Claim swap perk callback ─────────────────────────────────────────────
+  bot.callbackQuery(/^claim_swap:(.+)$/, async (ctx) => {
+    const roomId = ctx.match[1];
+    const telegramId = String(ctx.from.id);
 
-    const telegramId = String(from.id);
-    const text = ctx.message.text.trim();
-
-    // Priority 1: awaiting fake bluff stats
-    const awaitingRoomId = await getAwaitingBluff(telegramId);
-    if (awaitingRoomId) {
-      await handleFakeStatsInput(ctx, telegramId, awaitingRoomId, text);
+    const room = await getRoom(roomId);
+    if (!room || room.status !== "playing" || room.currentAttackerId !== telegramId) {
+      await ctx.answerCallbackQuery({ text: ctx.t("session-expired"), show_alert: true });
+      return;
+    }
+    if (!room.players.find(p => p.telegramId === telegramId)?.swapPerkAvailable) {
+      await ctx.answerCallbackQuery({ text: ctx.t("session-expired"), show_alert: true });
       return;
     }
 
-    // Priority 2: exactly 4 digits
+    await ctx.answerCallbackQuery();
+    try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
+
+    // Pause the turn AFK timer while player enters swap positions
+    cancelTimer(turnKey(roomId, room.turnNumber ?? 0));
+    await setAwaitingSwap(telegramId, roomId);
+    await ctx.reply(ctx.t("swap-perk-ask-positions"), { parse_mode: "HTML" });
+  });
+
+  // ── All text messages ────────────────────────────────────────────────────
+  bot.on("message:text", async (ctx) => {
+    const from = ctx.from;
+    if (!from) return;
+    const telegramId = String(from.id);
+    const text = ctx.message.text.trim();
+
+    // 1. Awaiting fake bluff stats
+    const bluffRoomId = await getAwaitingBluff(telegramId);
+    if (bluffRoomId) {
+      await handleFakeStatsInput(ctx, bot, telegramId, bluffRoomId, text);
+      return;
+    }
+
+    // 2. Awaiting swap positions
+    const swapRoomId = await getAwaitingSwap(telegramId);
+    if (swapRoomId) {
+      await handleSwapInput(ctx, bot, telegramId, swapRoomId, text);
+      return;
+    }
+
+    // 3. Exactly 4 digits → code or guess
     if (!/^\d{4}$/.test(text)) return;
 
     const roomId = await getPlayerRoom(telegramId);
@@ -536,9 +671,9 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
     if (!room) return;
 
     if (room.status === "collecting_codes") {
-      await handleCodeCollection(ctx, telegramId, roomId, text);
+      await handleCodeCollection(ctx, bot, telegramId, roomId, text);
     } else if (room.status === "playing") {
-      await handleGuess(ctx, telegramId, roomId, text, room);
+      await handleGuess(ctx, bot, telegramId, roomId, text, room);
     }
   });
 }

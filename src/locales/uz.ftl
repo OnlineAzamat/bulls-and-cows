@@ -169,6 +169,35 @@ room-dissolved = 🚫 Host <code>{ $roomId }</code> xonasini tark etdi. Xona yop
 you-left-room = 👋 Siz <code>{ $roomId }</code> xonasini tark etdingiz.
 you-were-kicked = ❌ Siz <code>{ $roomId }</code> xonasidan chiqarib yuborldingiz.
 
+# ── AFK / Timeout ─────────────────────────────────────────────────────────────
+turn-skipped-afk = ⏳ <b>{ $playerName }</b> juda uzoq o'yladi! Navbat o'tkazib yuborildi.
+bluff-timeout-auto-truth = ⏰ Javob vaqti tugadi! Haqiqat avtomatik yuborildi.
+
+# ── Honest Perk (Swap) ────────────────────────────────────────────────────────
+swap-perk-offer =
+    🎁 <b>Halol o'yinchi bonusi!</b>
+
+    Siz 4 davrdan beri blef ishlatmadingiz.
+    Yashirin kodingizning ikkita raqamini almashtirishni xohlaysizmi?
+
+swap-perk-ask-positions =
+    Almashtiradigan ikkita pozitsiya raqamini kiriting (1–4), masalan: <code>1 3</code>
+    Pozitsiyalar har xil bo'lishi kerak.
+
+swap-perk-invalid-positions = ❌ Noto'g'ri kiritish. 1–4 orasidagi har xil ikkita son kiriting, masalan: <code>1 3</code>
+
+swap-perk-used = ✅ Kodingiz yangilandi. Taxmin qilishni davom eting!
+
+swap-perk-broadcast = 🔄 <b>{ $playerName }</b> halol o'yinchi bonusini ishlatdi va kodidagi ikkita raqamni almashtirdi!
+
+swap-perk-expired = ⏱ Bonus mavjud emas. Qayta urinib ko'ring.
+
+# ── Leaderboard ───────────────────────────────────────────────────────────────
+top-title = 🏆 <b>Eng yaxshi o'yinchilar:</b>
+top-empty = ℹ️ Hali hech kim o'ynamagan. Birinchi bo'lib o'ynang!
+top-label-wins = g'alaba
+top-label-games = o'yin
+
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek
@@ -176,3 +205,4 @@ btn-start-game = 🚀 O'yinni boshlash
 btn-tell-truth = ✅ Haqiqatni aytish
 btn-bluff = 🎭 Blef qilish
 btn-leave-room = 🚪 Xonadan chiqish
+btn-use-swap-perk = 🎁 Bonus: raqamlarni almashtirish
