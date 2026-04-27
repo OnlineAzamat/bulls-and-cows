@@ -78,6 +78,64 @@ function resolveCurrentTurn(room: RoomData): { attacker: RoomPlayer; target: Roo
   return { attacker, target };
 }
 
+// ── Game Board & Micro-Action Broadcasts ──────────────────────────────────────
+
+async function broadcastGameBoard(bot: Bot<MyContext>, room: RoomData): Promise<void> {
+  const turn = resolveCurrentTurn(room);
+  if (!turn) return;
+  const { attacker, target } = turn;
+
+  for (const p of room.players.filter(pl => !pl.eliminated)) {
+    const lang = p.languageCode;
+
+    const lines: string[] = [];
+    let pos = 1;
+    for (const entry of (room.turnOrder ?? [])) {
+      const player = room.players.find(pl => pl.telegramId === entry.attackerId);
+      if (!player) continue;
+      const isActive = entry.attackerId === room.currentAttackerId;
+      lines.push(
+        isActive
+          ? i18n.t(lang, "game-board-status-active",   { position: String(pos++), name: displayName(player) })
+          : i18n.t(lang, "game-board-status-waiting",  { position: String(pos++), name: displayName(player) })
+      );
+    }
+    for (const ep of room.players.filter(pl => pl.eliminated)) {
+      lines.push(i18n.t(lang, "game-board-status-eliminated", { name: displayName(ep) }));
+    }
+
+    const action   = i18n.t(lang, "game-board-action-guessing", {
+      attackerName: displayName(attacker),
+      targetName:   displayName(target),
+    });
+
+    try {
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        i18n.t(lang, "game-board", { action, sequence: lines.join("\n") }),
+        { parse_mode: "HTML" }
+      );
+    } catch { /* blocked */ }
+  }
+}
+
+async function broadcastMicroAction(
+  bot: Bot<MyContext>,
+  room: RoomData,
+  key: string,
+  vars: Record<string, string>
+): Promise<void> {
+  for (const p of room.players.filter(pl => !pl.eliminated)) {
+    try {
+      await bot.api.sendMessage(
+        Number(p.telegramId),
+        tFor(p, key, vars),
+        { parse_mode: "HTML" }
+      );
+    } catch { /* blocked */ }
+  }
+}
+
 // ── Bot-based helpers (work both from handlers and from timer callbacks) ───────
 
 async function sendTurnPrompt(bot: Bot<MyContext>, room: RoomData): Promise<void> {
@@ -85,6 +143,9 @@ async function sendTurnPrompt(bot: Bot<MyContext>, room: RoomData): Promise<void
   if (!turn) return;
   const { attacker, target } = turn;
   const tNum = room.turnNumber ?? 0;
+
+  // Broadcast visual game board to all active players before prompting the next attacker
+  await broadcastGameBoard(bot, room);
 
   // Offer swap perk if earned
   if (attacker.swapPerkAvailable) {
@@ -319,6 +380,11 @@ async function handleBluffAFK(
   await clearPendingGuess(roomId);
   await incrementHonestCycles(roomId, targetId);
 
+  // Inform everyone the target responded (auto-truth)
+  await broadcastMicroAction(bot, room, "broadcast-target-responded", {
+    targetName: displayName(target),
+  });
+
   const updated = await advanceTurn(roomId);
   if (updated) {
     await checkAndApplyBluffPenalties(bot, updated);
@@ -390,6 +456,12 @@ async function handleGuess(
 
   await ctx.reply(ctx.t("guess-sent", { targetName: displayName(target) }), { parse_mode: "HTML" });
 
+  // Notify everyone that a guess was made and the target is deciding
+  await broadcastMicroAction(bot, room, "broadcast-guess-made", {
+    guesserName: displayName(attacker),
+    targetName:  displayName(target),
+  });
+
   const kb = new InlineKeyboard().text(tFor(target, "btn-tell-truth"), `truth:${roomId}`);
   if (!target.hasBluffed) kb.text(tFor(target, "btn-bluff"), `bluff:${roomId}`);
 
@@ -410,7 +482,6 @@ async function handleGuess(
 }
 
 async function processTruth(
-  ctx: MyContext,
   bot: Bot<MyContext>,
   roomId: string,
   pending: PendingGuess,
@@ -434,6 +505,11 @@ async function processTruth(
 
   await clearPendingGuess(roomId);
   await incrementHonestCycles(roomId, pending.targetId);
+
+  // Inform everyone the target has responded and the turn is moving on
+  await broadcastMicroAction(bot, room, "broadcast-target-responded", {
+    targetName: displayName(target),
+  });
 
   const updated = await advanceTurn(roomId);
   if (updated) {
@@ -499,6 +575,11 @@ async function handleFakeStatsInput(
   await ctx.reply(ctx.t("bluff-registered"), { parse_mode: "HTML" });
   await clearAwaitingBluff(telegramId);
   await clearPendingGuess(roomId);
+
+  // Inform everyone the target has responded (without revealing they bluffed)
+  await broadcastMicroAction(bot, room, "broadcast-target-responded", {
+    targetName: displayName(bluffer),
+  });
 
   const updated = await advanceTurn(roomId);
   if (updated) {
@@ -576,7 +657,7 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
     await ctx.reply(ctx.t("you-chose-truth"), { parse_mode: "HTML" });
 
     const room = await getRoom(roomId);
-    if (room) await processTruth(ctx, bot, roomId, pending, room);
+    if (room) await processTruth(bot, roomId, pending, room);
   });
 
   // ── Bluff callback ───────────────────────────────────────────────────────
@@ -600,7 +681,7 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
     if (room.players.find(p => p.telegramId === telegramId)?.hasBluffed) {
       await ctx.answerCallbackQuery({ text: ctx.t("bluff-already-used"), show_alert: true });
       try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
-      await processTruth(ctx, bot, roomId, pending, room);
+      await processTruth(bot, roomId, pending, room);
       return;
     }
 

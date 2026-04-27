@@ -167,8 +167,8 @@ leaveroom-not-in-room = ℹ️ Siz hech qanday xonada emassiz.
 leaveroom-game-active = ❌ Faol o'yin davomida xonani tark etib bo'lmaydi.
 room-dissolved = 🚫 Host <code>{ $roomId }</code> xonasini tark etdi. Xona yopildi.
 you-left-room = 👋 Siz <code>{ $roomId }</code> xonasini tark etdingiz.
-you-were-kicked = ❌ Siz <code>{ $roomId }</code> xonasidan chiqarib yuborldingiz.
-already-in-active-room = ⚠️ Siz allaqachon faol xonada siz! Avval uni tugatang yoki tark eting (/leaveroom).
+you-were-kicked = ❌ Siz <code>{ $roomId }</code> xonasidan chiqarib yuborildingiz.
+already-in-active-room = ⚠️ Siz allaqachon faol xonada siz! Avval uni tugating yoki tark eting (/leaveroom).
 room-closed-by-host = 🚫 Host <code>{ $roomId }</code> xonasini yopdi.
 closeroom-not-host = ❌ Faqat host xonani yopa oladi.
 closeroom-success = ✅ <code>{ $roomId }</code> xonasi yopildi.
@@ -202,6 +202,24 @@ top-empty = ℹ️ Hali hech kim o'ynamagan. Birinchi bo'lib o'ynang!
 top-label-wins = g'alaba
 top-label-games = o'yin
 top-error = ❌ Reyting jadvalini yuklab bo'lmadi. Keyinroq urinib ko'ring.
+
+# ── Game Board ────────────────────────────────────────────────────────────────
+game-board =
+    🔄 <b>O'YIN HOLATI</b> 🔄
+
+    ▶️ { $action }
+
+    Navbat tartibi:
+    { $sequence }
+
+game-board-action-guessing = { $attackerName } → { $targetName } kodini taxmin qilmoqda...
+
+game-board-status-active = ➡️  { $position }. { $name } (O'ylayapti...)
+game-board-status-waiting = ⏳  { $position }. { $name } (Kutmoqda)
+game-board-status-eliminated = ❌  { $name } (Chiqarilgan)
+
+broadcast-guess-made = 👀 <b>{ $guesserName }</b> taxmin qildi! <b>{ $targetName }</b> haqiqatni aytish yoki blef qilishni hal qilmoqda...
+broadcast-target-responded = ✅ <b>{ $targetName }</b> javob berdi! Navbat keyingi o'yinchiga o'tdi.
 
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский

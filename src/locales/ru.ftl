@@ -204,6 +204,24 @@ top-label-wins = побед
 top-label-games = игр
 top-error = ❌ Не удалось загрузить таблицу лидеров. Попробуйте позже.
 
+# ── Game Board ────────────────────────────────────────────────────────────────
+game-board =
+    🔄 <b>СТАТУС ИГРЫ</b> 🔄
+
+    ▶️ { $action }
+
+    Порядок ходов:
+    { $sequence }
+
+game-board-action-guessing = { $attackerName } → { $targetName } угадывает код...
+
+game-board-status-active = ➡️  { $position }. { $name } (Думает...)
+game-board-status-waiting = ⏳  { $position }. { $name } (Ожидает)
+game-board-status-eliminated = ❌  { $name } (Выбыл)
+
+broadcast-guess-made = 👀 <b>{ $guesserName }</b> сделал попытку! <b>{ $targetName }</b> решает: правда или блеф...
+broadcast-target-responded = ✅ <b>{ $targetName }</b> ответил! Ход переходит к следующему игроку.
+
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский
 btn-language-uz = 🇺🇿 O'zbek

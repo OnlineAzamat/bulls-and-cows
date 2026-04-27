@@ -143,3 +143,10 @@ vite.config.ts.timestamp-*
 .vite/
 
 /src/generated/prisma
+
+# VS Code settings
+.vscode
+
+#Claude Code settings
+.claude
+ecosystem.config.js

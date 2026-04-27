@@ -192,11 +192,15 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
     const existingRoomId = await getPlayerRoom(telegramId);
     if (existingRoomId) {
       const existingRoom = await getRoom(existingRoomId);
-      if (existingRoom) {
+      const isActiveRoom =
+        existingRoom &&
+        existingRoom.status !== "finished" &&
+        existingRoom.players.some(p => p.telegramId === telegramId);
+      if (isActiveRoom) {
         await ctx.reply(ctx.t("already-in-active-room"), { parse_mode: "HTML" });
         return;
       }
-      // Stale pointer — clean up silently
+      // Stale, finished, or orphaned pointer — clean up silently
       await clearPlayerRoom(telegramId);
     }
 
@@ -246,11 +250,15 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
     const existingRoomId = await getPlayerRoom(telegramId);
     if (existingRoomId && existingRoomId !== roomId) {
       const existingRoom = await getRoom(existingRoomId);
-      if (existingRoom) {
+      const isActiveRoom =
+        existingRoom &&
+        existingRoom.status !== "finished" &&
+        existingRoom.players.some(p => p.telegramId === telegramId);
+      if (isActiveRoom) {
         await ctx.reply(ctx.t("already-in-active-room"), { parse_mode: "HTML" });
         return;
       }
-      // Stale pointer — clean up silently
+      // Stale, finished, or orphaned pointer — clean up silently
       await clearPlayerRoom(telegramId);
     }
 

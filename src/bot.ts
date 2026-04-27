@@ -26,8 +26,8 @@ bot.use(localeMiddleware); // restores locale from DB/Redis after restarts
 registerStartHandler(bot);
 registerProfileHandler(bot);
 registerRoomHandlers(bot);
-registerGameHandlers(bot);
 registerTopHandler(bot);
+registerGameHandlers(bot);
 
 bot.catch((err) => {
   const ctx = err.ctx;
