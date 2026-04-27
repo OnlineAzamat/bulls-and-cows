@@ -236,7 +236,7 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
 
   // ── /joinroom <ROOMID> ────────────────────────────────────────────────────
   bot.command("joinroom", async (ctx) => {
-    const roomId = ctx.match.trim().toUpperCase();
+    const roomId = ctx.match.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 
     if (!roomId) {
       await ctx.reply(ctx.t("joinroom-usage"), { parse_mode: "HTML" });
