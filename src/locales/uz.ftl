@@ -168,6 +168,10 @@ leaveroom-game-active = ❌ Faol o'yin davomida xonani tark etib bo'lmaydi.
 room-dissolved = 🚫 Host <code>{ $roomId }</code> xonasini tark etdi. Xona yopildi.
 you-left-room = 👋 Siz <code>{ $roomId }</code> xonasini tark etdingiz.
 you-were-kicked = ❌ Siz <code>{ $roomId }</code> xonasidan chiqarib yuborldingiz.
+already-in-active-room = ⚠️ Siz allaqachon faol xonada siz! Avval uni tugatang yoki tark eting (/leaveroom).
+room-closed-by-host = 🚫 Host <code>{ $roomId }</code> xonasini yopdi.
+closeroom-not-host = ❌ Faqat host xonani yopa oladi.
+closeroom-success = ✅ <code>{ $roomId }</code> xonasi yopildi.
 
 # ── AFK / Timeout ─────────────────────────────────────────────────────────────
 turn-skipped-afk = ⏳ <b>{ $playerName }</b> juda uzoq o'yladi! Navbat o'tkazib yuborildi.
@@ -197,6 +201,7 @@ top-title = 🏆 <b>Eng yaxshi o'yinchilar:</b>
 top-empty = ℹ️ Hali hech kim o'ynamagan. Birinchi bo'lib o'ynang!
 top-label-wins = g'alaba
 top-label-games = o'yin
+top-error = ❌ Reyting jadvalini yuklab bo'lmadi. Keyinroq urinib ko'ring.
 
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский

@@ -169,6 +169,10 @@ leaveroom-game-active = ❌ Нельзя покинуть комнату во в
 room-dissolved = 🚫 Хост покинул комнату <code>{ $roomId }</code>. Комната закрыта.
 you-left-room = 👋 Вы покинули комнату <code>{ $roomId }</code>.
 you-were-kicked = ❌ Вас исключили из комнаты <code>{ $roomId }</code>.
+already-in-active-room = ⚠️ Вы уже находитесь в активной комнате! Сначала завершите её или покиньте (/leaveroom).
+room-closed-by-host = 🚫 Хост закрыл комнату <code>{ $roomId }</code>.
+closeroom-not-host = ❌ Только хост может закрыть комнату.
+closeroom-success = ✅ Комната <code>{ $roomId }</code> закрыта.
 
 # ── AFK / Timeout ─────────────────────────────────────────────────────────────
 turn-skipped-afk = ⏳ <b>{ $playerName }</b> слишком долго думал! Ход пропущен.
@@ -198,6 +202,7 @@ top-title = 🏆 <b>Лучшие игроки:</b>
 top-empty = ℹ️ Пока никто не сыграл. Начните игру первыми!
 top-label-wins = побед
 top-label-games = игр
+top-error = ❌ Не удалось загрузить таблицу лидеров. Попробуйте позже.
 
 # ── Buttons ───────────────────────────────────────────────────────────────────
 btn-language-ru = 🇷🇺 Русский

@@ -186,10 +186,24 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
   // ── /createroom ──────────────────────────────────────────────────────────
   bot.command("createroom", async (ctx) => {
     const from = ctx.from!;
+    const telegramId = String(from.id);
+
+    // User-room lock: block if already in an active room
+    const existingRoomId = await getPlayerRoom(telegramId);
+    if (existingRoomId) {
+      const existingRoom = await getRoom(existingRoomId);
+      if (existingRoom) {
+        await ctx.reply(ctx.t("already-in-active-room"), { parse_mode: "HTML" });
+        return;
+      }
+      // Stale pointer — clean up silently
+      await clearPlayerRoom(telegramId);
+    }
+
     const locale = await resolveLocale(ctx);
 
     const host: RoomPlayer = {
-      telegramId: String(from.id),
+      telegramId,
       firstName: from.first_name,
       username: from.username,
       languageCode: locale,
@@ -226,10 +240,24 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
     }
 
     const from = ctx.from!;
+    const telegramId = String(from.id);
+
+    // User-room lock: block if already in a DIFFERENT active room
+    const existingRoomId = await getPlayerRoom(telegramId);
+    if (existingRoomId && existingRoomId !== roomId) {
+      const existingRoom = await getRoom(existingRoomId);
+      if (existingRoom) {
+        await ctx.reply(ctx.t("already-in-active-room"), { parse_mode: "HTML" });
+        return;
+      }
+      // Stale pointer — clean up silently
+      await clearPlayerRoom(telegramId);
+    }
+
     const locale = await resolveLocale(ctx);
 
     const player: RoomPlayer = {
-      telegramId: String(from.id),
+      telegramId,
       firstName: from.first_name,
       username: from.username,
       languageCode: locale,
@@ -349,6 +377,72 @@ export function registerRoomHandlers(bot: Bot<MyContext>): void {
 
     if (result.type === "removed") {
       await updateAllLobbyMessages(ctx, result.room, targetId);
+    }
+  });
+
+  // ── /closeroom ────────────────────────────────────────────────────────────
+  bot.command("closeroom", async (ctx) => {
+    const from = ctx.from!;
+    const telegramId = String(from.id);
+
+    const roomId = await getPlayerRoom(telegramId);
+    if (!roomId) {
+      await ctx.reply(ctx.t("leaveroom-not-in-room"));
+      return;
+    }
+
+    const room = await getRoom(roomId);
+    if (!room) {
+      await clearPlayerRoom(telegramId);
+      await ctx.reply(ctx.t("leaveroom-not-in-room"));
+      return;
+    }
+
+    if (room.hostId !== telegramId) {
+      await ctx.reply(ctx.t("closeroom-not-host"));
+      return;
+    }
+
+    if (room.status !== "waiting") {
+      await ctx.reply(ctx.t("leaveroom-game-active"));
+      return;
+    }
+
+    // removePlayer on the host atomically deletes the room key
+    const result = await removePlayer(roomId, telegramId);
+    if (result.type !== "dissolved") return;
+
+    const msgMap = await getPlayerLobbyMessages(roomId, result.players);
+
+    for (const p of result.players) {
+      await clearPlayerRoom(p.telegramId);
+
+      const isHost = p.telegramId === telegramId;
+      const text = isHost
+        ? tFor(p, "closeroom-success", { roomId })
+        : tFor(p, "room-closed-by-host", { roomId });
+
+      const msgId = msgMap[p.telegramId];
+      if (msgId) {
+        try {
+          await ctx.api.editMessageText(Number(p.telegramId), msgId, text, {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard(),
+          });
+          await deleteLobbyMessage(roomId, p.telegramId);
+          continue;
+        } catch { /* fall through */ }
+      }
+
+      await deleteLobbyMessage(roomId, p.telegramId);
+
+      if (isHost) {
+        try { await ctx.reply(text, { parse_mode: "HTML" }); } catch { }
+      } else {
+        try {
+          await ctx.api.sendMessage(Number(p.telegramId), text, { parse_mode: "HTML" });
+        } catch { /* blocked */ }
+      }
     }
   });
 
