@@ -25,6 +25,9 @@ import {
   incrementHonestCycles,
   resetHonestCycles,
   swapCodeDigits,
+  setUiMsg,
+  getUiMsg,
+  delUiMsg,
   RoomData,
   RoomPlayer,
   PendingGuess,
@@ -104,17 +107,22 @@ async function broadcastGameBoard(bot: Bot<MyContext>, room: RoomData): Promise<
       lines.push(i18n.t(lang, "game-board-status-eliminated", { name: displayName(ep) }));
     }
 
-    const action   = i18n.t(lang, "game-board-action-guessing", {
+    const action = i18n.t(lang, "game-board-action-guessing", {
       attackerName: displayName(attacker),
       targetName:   displayName(target),
     });
+    const text = i18n.t(lang, "game-board", { action, sequence: lines.join("\n") });
+
+    // Delete the previous floating game board so only one exists at a time
+    const oldId = await getUiMsg("game_board", p.telegramId);
+    if (oldId) {
+      try { await bot.api.deleteMessage(Number(p.telegramId), oldId); } catch { /* already gone */ }
+      await delUiMsg("game_board", p.telegramId);
+    }
 
     try {
-      await bot.api.sendMessage(
-        Number(p.telegramId),
-        i18n.t(lang, "game-board", { action, sequence: lines.join("\n") }),
-        { parse_mode: "HTML" }
-      );
+      const sent = await bot.api.sendMessage(Number(p.telegramId), text, { parse_mode: "HTML" });
+      await setUiMsg("game_board", p.telegramId, sent.message_id);
     } catch { /* blocked */ }
   }
 }
@@ -123,17 +131,57 @@ async function broadcastMicroAction(
   bot: Bot<MyContext>,
   room: RoomData,
   key: string,
-  vars: Record<string, string>
+  vars: Record<string, string>,
+  storeAs?: "broadcast_action"
 ): Promise<void> {
   for (const p of room.players.filter(pl => !pl.eliminated)) {
     try {
-      await bot.api.sendMessage(
-        Number(p.telegramId),
-        tFor(p, key, vars),
-        { parse_mode: "HTML" }
-      );
+      const sent = await bot.api.sendMessage(Number(p.telegramId), tFor(p, key, vars), { parse_mode: "HTML" });
+      if (storeAs) await setUiMsg(storeAs, p.telegramId, sent.message_id);
     } catch { /* blocked */ }
   }
+}
+
+// Edit each player's stored broadcast_action message in-place (no new message sent).
+async function editBroadcastForAll(
+  bot: Bot<MyContext>,
+  room: RoomData,
+  key: string,
+  vars: Record<string, string>
+): Promise<void> {
+  for (const p of room.players.filter(pl => !pl.eliminated)) {
+    const msgId = await getUiMsg("broadcast_action", p.telegramId);
+    if (!msgId) continue;
+    try {
+      await bot.api.editMessageText(Number(p.telegramId), msgId, tFor(p, key, vars), { parse_mode: "HTML" });
+    } catch { /* too old or already deleted — gracefully ignore */ }
+    await delUiMsg("broadcast_action", p.telegramId);
+  }
+}
+
+// Edit the attacker's "waiting for result" message to show the final result.
+// Falls back to sending a new message if the stored ID is missing or stale.
+async function deliverGuessResult(
+  bot: Bot<MyContext>,
+  attacker: RoomPlayer,
+  target: RoomPlayer,
+  guess: string,
+  bulls: number,
+  cows: number
+): Promise<void> {
+  const text = tFor(attacker, "guess-result", {
+    targetName: displayName(target), guess, bulls: String(bulls), cows: String(cows),
+  });
+  const msgId = await getUiMsg("guess_waiting", attacker.telegramId);
+  if (msgId) {
+    try {
+      await bot.api.editMessageText(Number(attacker.telegramId), msgId, text, { parse_mode: "HTML" });
+      await delUiMsg("guess_waiting", attacker.telegramId);
+      return;
+    } catch { /* stale — fall through to send fresh */ }
+    await delUiMsg("guess_waiting", attacker.telegramId);
+  }
+  try { await bot.api.sendMessage(Number(attacker.telegramId), text, { parse_mode: "HTML" }); } catch { /* blocked */ }
 }
 
 // ── Bot-based helpers (work both from handlers and from timer callbacks) ───────
@@ -163,11 +211,12 @@ async function sendTurnPrompt(bot: Bot<MyContext>, room: RoomData): Promise<void
   }
 
   try {
-    await bot.api.sendMessage(
+    const sent = await bot.api.sendMessage(
       Number(attacker.telegramId),
       tFor(attacker, "your-turn", { targetName: displayName(target), roomId: room.roomId }),
       { parse_mode: "HTML" }
     );
+    await setUiMsg("turn_prompt", attacker.telegramId, sent.message_id);
   } catch { /* blocked */ }
 
   setTimer(turnKey(room.roomId, tNum), TURN_TIMEOUT_MS, () => {
@@ -320,6 +369,13 @@ async function handleTurnAFK(
 
   await clearAwaitingSwap(attackerId);
 
+  // Delete the stale "your turn" prompt that was never answered
+  const promptId = await getUiMsg("turn_prompt", attackerId);
+  if (promptId) {
+    try { await bot.api.deleteMessage(Number(attackerId), promptId); } catch { /* already gone */ }
+    await delUiMsg("turn_prompt", attackerId);
+  }
+
   for (const p of room.players.filter(p => !p.eliminated)) {
     try {
       await bot.api.sendMessage(
@@ -364,24 +420,14 @@ async function handleBluffAFK(
     );
   } catch { /* blocked */ }
 
-  try {
-    await bot.api.sendMessage(
-      Number(attacker.telegramId),
-      tFor(attacker, "guess-result", {
-        targetName: displayName(target),
-        guess:      pending.guess,
-        bulls:      String(pending.realBulls),
-        cows:       String(pending.realCows),
-      }),
-      { parse_mode: "HTML" }
-    );
-  } catch { /* blocked */ }
+  // Edit the attacker's waiting message to show the real result
+  await deliverGuessResult(bot, attacker, target, pending.guess, pending.realBulls, pending.realCows);
 
   await clearPendingGuess(roomId);
   await incrementHonestCycles(roomId, targetId);
 
-  // Inform everyone the target responded (auto-truth)
-  await broadcastMicroAction(bot, room, "broadcast-target-responded", {
+  // Edit each player's broadcast action message to show target responded
+  await editBroadcastForAll(bot, room, "broadcast-target-responded", {
     targetName: displayName(target),
   });
 
@@ -440,6 +486,13 @@ async function handleGuess(
 
   cancelTimer(turnKey(roomId, room.turnNumber ?? 0));
 
+  // Delete the "your turn" prompt now that the player has responded
+  const promptId = await getUiMsg("turn_prompt", telegramId);
+  if (promptId) {
+    try { await bot.api.deleteMessage(Number(telegramId), promptId); } catch { /* already gone */ }
+    await delUiMsg("turn_prompt", telegramId);
+  }
+
   const entry  = room.turnOrder?.find(e => e.attackerId === telegramId);
   const target = entry ? room.players.find(p => p.telegramId === entry.targetId) : undefined;
   if (!target?.secretCode) return;
@@ -454,13 +507,17 @@ async function handleGuess(
 
   await setPendingGuess(roomId, { roomId, attackerId: telegramId, targetId: target.telegramId, guess, realBulls: bulls, realCows: cows });
 
-  await ctx.reply(ctx.t("guess-sent", { targetName: displayName(target) }), { parse_mode: "HTML" });
+  // Send "waiting for result" and store the ID so we can edit it later
+  try {
+    const sent = await ctx.reply(ctx.t("guess-sent", { targetName: displayName(target) }), { parse_mode: "HTML" });
+    await setUiMsg("guess_waiting", telegramId, sent.message_id);
+  } catch { /* blocked */ }
 
-  // Notify everyone that a guess was made and the target is deciding
+  // Notify everyone that a guess was made — store per-player so we can edit it later
   await broadcastMicroAction(bot, room, "broadcast-guess-made", {
     guesserName: displayName(attacker),
     targetName:  displayName(target),
-  });
+  }, "broadcast_action");
 
   const kb = new InlineKeyboard().text(tFor(target, "btn-tell-truth"), `truth:${roomId}`);
   if (!target.hasBluffed) kb.text(tFor(target, "btn-bluff"), `bluff:${roomId}`);
@@ -492,22 +549,14 @@ async function processTruth(
   const attacker = room.players.find(p => p.telegramId === pending.attackerId)!;
   const target   = room.players.find(p => p.telegramId === pending.targetId)!;
 
-  try {
-    await bot.api.sendMessage(
-      Number(attacker.telegramId),
-      tFor(attacker, "guess-result", {
-        targetName: displayName(target), guess: pending.guess,
-        bulls: String(pending.realBulls), cows: String(pending.realCows),
-      }),
-      { parse_mode: "HTML" }
-    );
-  } catch { /* blocked */ }
+  // Edit the attacker's waiting message in-place with the real result
+  await deliverGuessResult(bot, attacker, target, pending.guess, pending.realBulls, pending.realCows);
 
   await clearPendingGuess(roomId);
   await incrementHonestCycles(roomId, pending.targetId);
 
-  // Inform everyone the target has responded and the turn is moving on
-  await broadcastMicroAction(bot, room, "broadcast-target-responded", {
+  // Edit each player's broadcast action message to show the turn moved on
+  await editBroadcastForAll(bot, room, "broadcast-target-responded", {
     targetName: displayName(target),
   });
 
@@ -549,16 +598,8 @@ async function handleFakeStatsInput(
   const attacker = room.players.find(p => p.telegramId === pending.attackerId)!;
   const bluffer  = room.players.find(p => p.telegramId === telegramId)!;
 
-  try {
-    await bot.api.sendMessage(
-      Number(attacker.telegramId),
-      tFor(attacker, "guess-result", {
-        targetName: displayName(bluffer), guess: pending.guess,
-        bulls: String(fakeBulls), cows: String(fakeCows),
-      }),
-      { parse_mode: "HTML" }
-    );
-  } catch { /* blocked */ }
+  // Edit the attacker's waiting message with the (fake) result
+  await deliverGuessResult(bot, attacker, bluffer, pending.guess, fakeBulls, fakeCows);
 
   const bluffRecord: BluffRecord = {
     blufferId: telegramId, attackerId: pending.attackerId,
@@ -576,8 +617,8 @@ async function handleFakeStatsInput(
   await clearAwaitingBluff(telegramId);
   await clearPendingGuess(roomId);
 
-  // Inform everyone the target has responded (without revealing they bluffed)
-  await broadcastMicroAction(bot, room, "broadcast-target-responded", {
+  // Edit each player's broadcast action message (without revealing the bluff)
+  await editBroadcastForAll(bot, room, "broadcast-target-responded", {
     targetName: displayName(bluffer),
   });
 
@@ -653,8 +694,12 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
     }
 
     await ctx.answerCallbackQuery();
-    try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
-    await ctx.reply(ctx.t("you-chose-truth"), { parse_mode: "HTML" });
+    // Collapse the bluff-or-truth prompt in-place so the chat stays clean
+    try {
+      await ctx.editMessageText(ctx.t("you-chose-truth"), { parse_mode: "HTML" });
+    } catch {
+      try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
+    }
 
     const room = await getRoom(roomId);
     if (room) await processTruth(bot, roomId, pending, room);
@@ -686,10 +731,15 @@ export function registerGameHandlers(bot: Bot<MyContext>): void {
     }
 
     await ctx.answerCallbackQuery();
-    try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
+    // Replace the bluff-or-truth prompt with the fake-stats instructions in-place
+    try {
+      await ctx.editMessageText(ctx.t("enter-fake-stats"), { parse_mode: "HTML" });
+    } catch {
+      try { await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }); } catch {}
+      await ctx.reply(ctx.t("enter-fake-stats"), { parse_mode: "HTML" });
+    }
 
     await setAwaitingBluff(telegramId, roomId);
-    await ctx.reply(ctx.t("enter-fake-stats"), { parse_mode: "HTML" });
 
     // Restart timer for fake-stats input phase
     setTimer(bluffKey(roomId, room.turnNumber ?? 0), BLUFF_TIMEOUT_MS, () => {

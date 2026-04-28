@@ -754,6 +754,32 @@ export async function cleanupRoom(
     pipeline.del(awaitingBluffKey(player.telegramId));
     pipeline.del(awaitingSwapKey(player.telegramId));
     pipeline.del(lobbyMsgKey(roomId, player.telegramId));
+    for (const type of UI_MSG_TYPES) {
+      pipeline.del(uiMsgKey(type, player.telegramId));
+    }
   }
   await pipeline.exec();
+}
+
+// ── UI message IDs (for editing/deleting in-flight messages) ──────────────────
+
+export type UiMsgType = "turn_prompt" | "guess_waiting" | "broadcast_action" | "game_board";
+
+const UI_MSG_TYPES: UiMsgType[] = ["turn_prompt", "guess_waiting", "broadcast_action", "game_board"];
+
+function uiMsgKey(type: UiMsgType, telegramId: string): string {
+  return `ui_msg:${type}:${telegramId}`;
+}
+
+export async function setUiMsg(type: UiMsgType, telegramId: string, msgId: number): Promise<void> {
+  await redis.set(uiMsgKey(type, telegramId), String(msgId), "EX", ROOM_TTL_SECONDS);
+}
+
+export async function getUiMsg(type: UiMsgType, telegramId: string): Promise<number | null> {
+  const v = await redis.get(uiMsgKey(type, telegramId));
+  return v ? Number(v) : null;
+}
+
+export async function delUiMsg(type: UiMsgType, telegramId: string): Promise<void> {
+  await redis.del(uiMsgKey(type, telegramId));
 }
